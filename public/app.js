@@ -1,0 +1,848 @@
+/* global marked, DOMPurify */
+(() => {
+  "use strict";
+
+  const token = location.pathname.split("/").pop();
+  const api = `/api/s/${token}`;
+  const $ = (sel, root = document) => root.querySelector(sel);
+  const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)");
+
+  DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+    if (node.tagName === "A") {
+      node.setAttribute("target", "_blank");
+      node.setAttribute("rel", "noopener noreferrer");
+    }
+  });
+
+  function md(text, className = "md") {
+    const div = document.createElement("div");
+    div.className = className;
+    div.innerHTML = DOMPurify.sanitize(marked.parse(text ?? "", { gfm: true, breaks: false }));
+    return div;
+  }
+
+  function el(tag, attrs = {}, ...children) {
+    const node = document.createElement(tag);
+    for (const [key, value] of Object.entries(attrs)) {
+      if (value === undefined || value === null || value === false) continue;
+      if (key === "class") node.className = value;
+      else if (key.startsWith("on")) node.addEventListener(key.slice(2), value);
+      else node.setAttribute(key, value === true ? "" : value);
+    }
+    for (const child of children.flat()) {
+      if (child === null || child === undefined || child === false) continue;
+      node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+    }
+    return node;
+  }
+
+  const kbd = (key) => el("kbd", {}, key);
+
+  function autogrow(textarea) {
+    const grow = () => {
+      textarea.style.height = "auto";
+      textarea.style.height = `${Math.min(textarea.scrollHeight + 2, 480)}px`;
+    };
+    textarea.addEventListener("input", grow);
+    textarea.grow = grow;
+    requestAnimationFrame(grow);
+  }
+
+  /* Theme */
+  const themeButton = $("#theme");
+  function applyTheme(theme) {
+    if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
+    else delete document.documentElement.dataset.theme;
+    themeButton.textContent = `Theme: ${theme}`;
+  }
+  let theme = localStorage.getItem("aur:theme") || "auto";
+  applyTheme(theme);
+  themeButton.addEventListener("click", () => {
+    theme = theme === "auto" ? "light" : theme === "light" ? "dark" : "auto";
+    localStorage.setItem("aur:theme", theme);
+    applyTheme(theme);
+  });
+
+  /* State */
+  let spec = null;
+  let sessionId = null;
+  let finished = false;
+  const state = {}; // question id -> { mode, selected: Set, otherOn, other, notes }
+  const views = {}; // question id -> question view (see renderQuestion)
+  let steps = []; // { kind: "intro" | "q" | "review", el, chip, q?, index? }
+  let current = 0;
+  let generalNotes = null;
+  const draftKey = () => `aur:draft:${sessionId}`;
+
+  const STATUS_TEXT = {
+    unanswered: "Not answered yet",
+    answered: "Answered",
+    deferred: "Deferred",
+    "needs-info": "Needs more info",
+  };
+
+  function statusOf(q) {
+    const s = state[q.id];
+    if (s.mode === "defer") return "deferred";
+    if (s.mode === "needs-info") return "needs-info";
+    return s.selected.size > 0 || (s.otherOn && s.other.trim()) ? "answered" : "unanswered";
+  }
+
+  function answerText(q) {
+    const status = statusOf(q);
+    if (status !== "answered") return status === "unanswered" ? "Not answered" : STATUS_TEXT[status];
+    const s = state[q.id];
+    const parts = q.options.filter((o) => s.selected.has(o.id)).map((o) => o.label);
+    if (s.otherOn && s.other.trim()) parts.push(q.options.length ? `Other: “${s.other.trim()}”` : `“${s.other.trim()}”`);
+    return parts.join(" + ");
+  }
+
+  function saveDraft() {
+    if (!sessionId || finished) return;
+    const draft = { step: current, generalNotes: generalNotes?.value ?? "", answers: {} };
+    for (const [id, s] of Object.entries(state)) {
+      draft.answers[id] = { mode: s.mode, selected: [...s.selected], otherOn: s.otherOn, other: s.other, notes: s.notes };
+    }
+    try {
+      localStorage.setItem(draftKey(), JSON.stringify(draft));
+    } catch {}
+  }
+
+  function loadDraft() {
+    try {
+      return JSON.parse(localStorage.getItem(draftKey()) || "null");
+    } catch {
+      return null;
+    }
+  }
+
+  function refreshSummary() {
+    const statuses = spec.questions.map(statusOf);
+    const resolved = statuses.filter((s) => s !== "unanswered").length;
+    const total = spec.questions.length;
+    $("#progress").textContent = `${resolved} / ${total} resolved`;
+    $("#bar-fill").style.width = `${(resolved / total) * 100}%`;
+    const count = (s) => statuses.filter((x) => x === s).length;
+    const parts = [`${count("answered")} answered`];
+    if (count("deferred")) parts.push(`${count("deferred")} deferred`);
+    if (count("needs-info")) parts.push(`${count("needs-info")} need info`);
+    if (count("unanswered")) parts.push(`${count("unanswered")} open`);
+    $("#footer-status").textContent = parts.join(" · ");
+    for (const step of steps) {
+      if (step.kind !== "q") continue;
+      const status = statuses[step.index];
+      step.chip.dataset.status = status;
+      step.chip.title = `${step.index + 1}. ${step.q.header} (${STATUS_TEXT[status].toLowerCase()})`;
+    }
+    resetSubmitConfirm();
+    if (steps[current]?.kind === "review") renderReview();
+  }
+
+  function changed(q) {
+    views[q.id].sync();
+    refreshSummary();
+    saveDraft();
+  }
+
+  /* Question screens */
+  function renderQuestion(q, index) {
+    const s = state[q.id];
+    const recs = new Set(q.recommended === undefined ? [] : [].concat(q.recommended));
+    const freeOnly = q.options.length === 0;
+    const role = q.multiSelect ? "checkbox" : "radio";
+    const optionRows = [];
+
+    const choose = (optionId) => {
+      if (q.multiSelect) {
+        if (s.selected.has(optionId)) s.selected.delete(optionId);
+        else s.selected.add(optionId);
+      } else {
+        s.selected = new Set([optionId]);
+        s.otherOn = false;
+      }
+      s.mode = "answer";
+      changed(q);
+    };
+
+    q.options.forEach((option, i) => {
+      const row = el(
+        "div",
+        { class: `opt${recs.has(option.id) ? " is-rec" : ""}`, role, tabindex: "-1", "aria-checked": "false" },
+        el("span", { class: `ind ${q.multiSelect ? "check" : "radio"}`, "aria-hidden": "true" }),
+        el(
+          "div",
+          { class: "opt-main" },
+          el("div", { class: "opt-label" }, option.label, recs.has(option.id) ? el("span", { class: "badge" }, "Recommended") : null),
+          option.description ? md(option.description, "md opt-desc") : null,
+          option.preview ? md(option.preview, "md preview") : null,
+        ),
+        i < 9 ? el("kbd", { "aria-hidden": "true" }, i + 1) : el("span"),
+      );
+      row.addEventListener("click", (event) => {
+        // Selecting text or scrolling inside a preview should not flip the answer.
+        if (event.target.closest(".preview") && getSelection().toString()) return;
+        choose(option.id);
+      });
+      optionRows.push({ option, row });
+    });
+
+    let otherText = null;
+    let otherRow = null;
+    const chooseOther = ({ focusText = true } = {}) => {
+      if (q.multiSelect && s.otherOn && !focusText) s.otherOn = false;
+      else {
+        s.otherOn = true;
+        if (!q.multiSelect) s.selected.clear();
+      }
+      s.mode = "answer";
+      changed(q);
+      if (s.otherOn && focusText) otherText.focus();
+    };
+    if (q.allowOther) {
+      otherText = el("textarea", {
+        rows: freeOnly ? 4 : 1,
+        placeholder: freeOnly ? "Your answer" : "Describe your own answer",
+        "aria-label": `${q.header}: ${freeOnly ? "answer" : "other answer"}`,
+      });
+      otherText.value = s.other;
+      autogrow(otherText);
+      otherText.addEventListener("input", () => {
+        s.other = otherText.value;
+        const on = s.other.trim() !== "";
+        if (freeOnly) s.otherOn = on;
+        else if (on && !s.otherOn) {
+          s.otherOn = true;
+          if (!q.multiSelect) s.selected.clear();
+        }
+        if (on) s.mode = "answer";
+        changed(q);
+      });
+      if (freeOnly) {
+        otherRow = el("div", { class: "free" }, otherText);
+      } else {
+        otherRow = el(
+          "div",
+          { class: "opt other", role, tabindex: "-1", "aria-checked": "false" },
+          el("span", { class: `ind ${q.multiSelect ? "check" : "radio"}`, "aria-hidden": "true" }),
+          el("div", { class: "opt-main" }, el("div", { class: "opt-label" }, "Other"), otherText),
+          el("kbd", { "aria-hidden": "true" }, "O"),
+        );
+        otherRow.addEventListener("click", (event) => {
+          if (event.target === otherText) {
+            if (!s.otherOn) chooseOther();
+            return;
+          }
+          chooseOther({ focusText: !s.otherOn });
+        });
+      }
+    }
+
+    // Roving tabindex: the option list is one Tab stop; arrows move inside it.
+    const focusables = [...optionRows.map((r) => r.row), ...(otherRow && !freeOnly ? [otherRow] : [])];
+    let roving = 0;
+    const setRoving = (i) => {
+      roving = Math.max(0, Math.min(focusables.length - 1, i));
+      focusables.forEach((node, j) => node.setAttribute("tabindex", j === roving ? "0" : "-1"));
+    };
+    focusables.forEach((node, i) => node.addEventListener("focus", () => setRoving(i)));
+    const selectedIndex = () => {
+      const i = optionRows.findIndex((r) => s.selected.has(r.option.id));
+      if (i >= 0) return i;
+      return s.otherOn && otherRow && !freeOnly ? focusables.length - 1 : 0;
+    };
+
+    const notes = el("textarea", { rows: 1, id: `notes-${index}`, "aria-label": `${q.header}: notes` });
+    notes.value = s.notes;
+    autogrow(notes);
+    notes.addEventListener("input", () => {
+      s.notes = notes.value;
+      saveDraft();
+    });
+
+    const setMode = (mode) => {
+      s.mode = mode;
+      changed(q);
+      if (mode === "needs-info") notes.focus();
+    };
+    const modeButtons = [
+      ["answer", "Answer", null],
+      ["defer", "Defer", "D"],
+      ["needs-info", "Need more info", "I"],
+    ].map(([mode, label, key]) =>
+      el("button", { type: "button", "data-mode": mode, onclick: () => setMode(mode) }, label, key ? kbd(key) : null),
+    );
+
+    const clear = () => {
+      s.selected.clear();
+      s.otherOn = false;
+      s.other = "";
+      if (otherText) {
+        otherText.value = "";
+        otherText.grow();
+      }
+      if (s.mode !== "answer") s.mode = "answer";
+      changed(q);
+    };
+    const clearButton = el("button", { type: "button", class: "linkish", onclick: clear }, "Clear answer", kbd("X"));
+
+    const applyRec = () => {
+      if (!recs.size) return false;
+      s.selected = new Set(recs);
+      s.otherOn = false;
+      s.mode = "answer";
+      changed(q);
+      return true;
+    };
+
+    const pill = el("span", { class: "pill" });
+    const deps = (q.dependsOn ?? []).map((depId) => {
+      const depIndex = spec.questions.findIndex((x) => x.id === depId);
+      return el(
+        "button",
+        { type: "button", onclick: () => go(stepIndexOfQuestion(depIndex)) },
+        `#${depIndex + 1} ${spec.questions[depIndex].header}`,
+      );
+    });
+    const recLabels = q.options.filter((o) => recs.has(o.id)).map((o) => o.label);
+    const kind = freeOnly ? "Free text" : q.multiSelect ? "Pick any" : "Pick one";
+
+    const card = el(
+      "article",
+      { class: "card q" },
+      el(
+        "div",
+        { class: "q-meta" },
+        el("span", {}, `Question ${index + 1} of ${spec.questions.length}`),
+        el("span", { class: "sep" }, "·"),
+        el("span", {}, kind),
+        pill,
+      ),
+      el("h2", { id: `q-title-${index}` }, q.header),
+      deps.length ? el("div", { class: "deps" }, "Builds on ", deps.flatMap((a, i) => (i ? [", ", a] : [a]))) : null,
+      q.body ? md(q.body, "md body") : null,
+      recLabels.length || q.rationale
+        ? el(
+            "div",
+            { class: "rec" },
+            el(
+              "div",
+              { class: "rec-title" },
+              recLabels.length ? `Recommended: ${recLabels.join(" + ")}` : "Claude's view",
+              recLabels.length ? el("span", { class: "take" }, "take it with", kbd("R")) : null,
+            ),
+            q.rationale ? md(q.rationale) : null,
+          )
+        : null,
+      el(
+        "div",
+        { class: "options", role: freeOnly ? null : q.multiSelect ? "group" : "radiogroup", "aria-labelledby": `q-title-${index}` },
+        optionRows.map((r) => r.row),
+        otherRow,
+      ),
+      el("div", { class: "q-foot" }, el("div", { class: "seg", role: "group", "aria-label": "Answer mode" }, modeButtons), clearButton),
+      el("div", { class: "notes-field" }, el("label", { class: "field-label", for: `notes-${index}` }, "Note for Claude", kbd("N")), notes),
+    );
+
+    const sync = () => {
+      for (const { option, row } of optionRows) {
+        const on = s.selected.has(option.id);
+        row.setAttribute("aria-checked", String(on));
+        row.classList.toggle("is-selected", on);
+      }
+      if (otherRow && !freeOnly) {
+        otherRow.setAttribute("aria-checked", String(s.otherOn));
+        otherRow.classList.toggle("is-selected", s.otherOn);
+      }
+      for (const button of modeButtons) button.setAttribute("aria-pressed", String(button.dataset.mode === s.mode));
+      card.dataset.mode = s.mode;
+      notes.placeholder =
+        s.mode === "needs-info"
+          ? "What do you need to know before deciding?"
+          : s.mode === "defer"
+            ? "Why defer, or when to come back to it (optional)"
+            : "Anything Claude should know about this answer (optional)";
+      clearButton.hidden = !(s.selected.size || s.otherOn || s.other);
+      const status = statusOf(q);
+      pill.dataset.status = status;
+      pill.textContent = STATUS_TEXT[status];
+    };
+
+    views[q.id] = {
+      root: card,
+      sync,
+      setMode,
+      clear,
+      applyRec,
+      chooseOther: () => (otherText ? chooseOther() : undefined),
+      focusNotes: () => notes.focus(),
+      chooseIndex(i) {
+        if (i < optionRows.length) {
+          choose(optionRows[i].option.id);
+          optionRows[i].row.focus({ preventScroll: false });
+        }
+      },
+      move(delta) {
+        if (!focusables.length) return;
+        const at = focusables.indexOf(document.activeElement);
+        const from = at >= 0 ? at : delta > 0 ? roving - 1 : roving + 1;
+        setRoving(from + delta);
+        focusables[roving].focus();
+      },
+      toggleFocused() {
+        const at = focusables.indexOf(document.activeElement);
+        if (at < 0) return false;
+        if (at < optionRows.length) choose(optionRows[at].option.id);
+        else chooseOther({ focusText: !s.otherOn });
+        return true;
+      },
+      // Enter on a single-choice question with nothing chosen picks the focused option before advancing.
+      confirmFocused() {
+        if (q.multiSelect || statusOf(q) !== "unanswered") return;
+        const at = focusables.indexOf(document.activeElement);
+        if (at >= 0 && at < optionRows.length) choose(optionRows[at].option.id);
+      },
+      focusPrimary() {
+        if (freeOnly && otherText) return otherText.focus({ preventScroll: true });
+        setRoving(selectedIndex());
+        focusables[roving]?.focus({ preventScroll: true });
+      },
+    };
+    setRoving(selectedIndex());
+    return card;
+  }
+
+  /* Intro and review screens */
+  function renderIntro() {
+    return el(
+      "article",
+      { class: "card intro-card" },
+      md(spec.intro),
+      el(
+        "div",
+        { class: "start-hint" },
+        `${spec.questions.length} question${spec.questions.length === 1 ? "" : "s"}, one per screen. Press`,
+        kbd("Enter"),
+        "to start, or",
+        kbd("?"),
+        "for every shortcut.",
+      ),
+    );
+  }
+
+  let reviewList = null;
+  let reviewCounts = null;
+  let acceptAllButton = null;
+  function buildReview() {
+    reviewList = el("ol", { class: "review-list" });
+    reviewCounts = el("div", { class: "review-counts" });
+    acceptAllButton = el("button", { type: "button", class: "ghost", onclick: acceptAll }, "Accept every recommendation on unanswered questions ", kbd("A"));
+    generalNotes = el("textarea", { id: "general-notes", rows: 2, placeholder: "Optional notes about the interview as a whole" });
+    autogrow(generalNotes);
+    generalNotes.addEventListener("input", saveDraft);
+    return el(
+      "article",
+      { class: "card review" },
+      el("h2", {}, "Review your answers"),
+      reviewCounts,
+      el("div", { class: "review-tools" }, acceptAllButton),
+      reviewList,
+      el("div", { class: "general" }, el("label", { class: "field-label", for: "general-notes" }, "Anything else Claude should know?"), generalNotes),
+    );
+  }
+
+  function renderReview() {
+    const statuses = spec.questions.map(statusOf);
+    const open = statuses.filter((s) => s === "unanswered").length;
+    reviewCounts.textContent =
+      open === 0 ? "Every question is resolved. Submit when ready." : `${open} question${open === 1 ? " is" : "s are"} still open. Click one to go back to it.`;
+    acceptAllButton.hidden = !spec.questions.some((q, i) => q.recommended !== undefined && statuses[i] === "unanswered");
+    reviewList.replaceChildren(
+      ...spec.questions.map((q, i) => {
+        const notes = state[q.id].notes.trim();
+        return el(
+          "li",
+          {},
+          el(
+            "button",
+            { type: "button", class: "review-row", onclick: () => go(stepIndexOfQuestion(i)) },
+            el("span", { class: "chip", "data-status": statuses[i], "aria-hidden": "true" }, i + 1),
+            el(
+              "div",
+              {},
+              el("div", { class: "review-q" }, q.header),
+              el("div", { class: "review-a", "data-status": statuses[i] }, answerText(q)),
+              notes ? el("div", { class: "review-note" }, `Note: ${notes.length > 160 ? `${notes.slice(0, 159)}…` : notes}`) : null,
+            ),
+          ),
+        );
+      }),
+    );
+  }
+
+  function acceptAll() {
+    for (const q of spec.questions) {
+      if (q.recommended === undefined || statusOf(q) !== "unanswered") continue;
+      state[q.id].selected = new Set([].concat(q.recommended));
+      state[q.id].otherOn = false;
+      state[q.id].mode = "answer";
+      views[q.id].sync();
+    }
+    refreshSummary();
+    saveDraft();
+  }
+
+  /* Step engine */
+  const stepIndexOfQuestion = (qIndex) => steps.findIndex((s) => s.kind === "q" && s.index === qIndex);
+  const prevButton = $("#prev");
+  const nextButton = $("#next");
+
+  function focusStep() {
+    const step = steps[current];
+    if (step.kind === "q") views[step.q.id].focusPrimary();
+    else if (step.kind === "review") nextButton.focus({ preventScroll: true });
+    else step.el.focus({ preventScroll: true });
+  }
+
+  function updateNav() {
+    const step = steps[current];
+    steps.forEach((s, i) => (i === current ? s.chip.setAttribute("aria-current", "step") : s.chip.removeAttribute("aria-current")));
+    prevButton.disabled = current === 0;
+    resetSubmitConfirm();
+    document.title = step.kind === "q" ? `${step.index + 1}/${spec.questions.length} · ${spec.title}` : spec.title;
+  }
+
+  function go(to, { animate = true, focus = true } = {}) {
+    to = Math.max(0, Math.min(steps.length - 1, to));
+    if (to === current && steps[to].el.hidden === false) {
+      if (focus) focusStep();
+      return;
+    }
+    const from = steps[current];
+    const dir = to > current ? "fwd" : "back";
+    from.el.hidden = true;
+    from.el.classList.remove("enter-fwd", "enter-back");
+    current = to;
+    const step = steps[current];
+    if (step.kind === "review") renderReview();
+    step.el.hidden = false;
+    step.el.classList.remove("enter-fwd", "enter-back");
+    if (animate && !reduceMotion.matches) {
+      void step.el.offsetWidth; // restart the animation when re-entering the same screen
+      step.el.classList.add(`enter-${dir}`);
+    }
+    // Textareas measured while hidden report 0 height.
+    step.el.querySelectorAll("textarea").forEach((t) => t.grow?.());
+    window.scrollTo({ top: 0 });
+    updateNav();
+    if (focus) focusStep();
+    saveDraft();
+  }
+
+  const next = () => go(current + 1);
+  const prev = () => go(current - 1);
+  prevButton.addEventListener("click", prev);
+  nextButton.addEventListener("click", () => (steps[current].kind === "review" ? submit() : next()));
+
+  function render() {
+    document.title = spec.title;
+    $("#title").textContent = spec.title;
+    const draft = loadDraft();
+    for (const q of spec.questions) {
+      const d = draft?.answers?.[q.id];
+      state[q.id] = {
+        mode: d?.mode ?? "answer",
+        selected: new Set((d?.selected ?? []).filter((id) => q.options.some((o) => o.id === id))),
+        otherOn: Boolean(d?.otherOn),
+        other: d?.other ?? "",
+        notes: d?.notes ?? "",
+      };
+    }
+
+    steps = [];
+    if (spec.intro) steps.push({ kind: "intro", body: renderIntro() });
+    spec.questions.forEach((q, index) => steps.push({ kind: "q", q, index, body: renderQuestion(q, index) }));
+    steps.push({ kind: "review", body: buildReview() });
+    if (draft?.generalNotes) generalNotes.value = draft.generalNotes;
+
+    const rail = $("#rail");
+    rail.replaceChildren();
+    steps.forEach((step, i) => {
+      step.el = el("section", { class: "step", tabindex: "-1", hidden: true }, step.body);
+      $("#steps").append(step.el);
+      const label = step.kind === "intro" ? "Intro" : step.kind === "review" ? "Review" : String(step.index + 1);
+      step.chip = el(
+        "button",
+        {
+          type: "button",
+          class: `chip${step.kind === "q" ? "" : " wide"}`,
+          tabindex: "-1",
+          "aria-label": step.kind === "q" ? `Question ${step.index + 1}` : label,
+          title: label,
+          onclick: () => go(i),
+        },
+        label,
+      );
+      rail.append(step.chip);
+    });
+
+    for (const q of spec.questions) views[q.id].sync();
+    refreshSummary();
+    const start = Number.isInteger(draft?.step) ? Math.min(draft.step, steps.length - 1) : 0;
+    current = start;
+    go(start, { animate: false });
+  }
+
+  /* Keyboard */
+  const help = $("#help");
+  const openHelp = () => {
+    if (!help.open) help.showModal();
+  };
+  $("#help-open").addEventListener("click", openHelp);
+  $("#help-close").addEventListener("click", () => help.close());
+  help.addEventListener("click", (event) => {
+    if (event.target === help) help.close(); // backdrop click
+  });
+  help.addEventListener("close", () => focusStep());
+
+  document.addEventListener("keydown", (event) => {
+    if (finished || !spec) return;
+    if (help.open) {
+      if (event.key === "?") {
+        event.preventDefault();
+        help.close();
+      }
+      return;
+    }
+    const target = event.target;
+    const typing = target instanceof HTMLElement && target.matches("textarea, input, select, [contenteditable]");
+    const step = steps[current];
+    const view = step.kind === "q" ? views[step.q.id] : null;
+    const key = event.key;
+
+    if ((event.ctrlKey || event.metaKey) && key === "Enter") {
+      event.preventDefault();
+      if (step.kind === "review") submit();
+      else next();
+      return;
+    }
+    if (typing) {
+      if (key === "Escape") {
+        event.preventDefault();
+        target.blur();
+        // A free-text question's primary focus is this very textarea, so Esc parks focus on the screen instead.
+        if (view && !target.closest(".free")) view.focusPrimary();
+        else step.el.focus({ preventScroll: true });
+      }
+      return;
+    }
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    const onButton = target instanceof HTMLElement && Boolean(target.closest("button, a"));
+
+    const handled = (() => {
+      switch (key) {
+        case "ArrowRight":
+        case "l":
+          next();
+          return true;
+        case "ArrowLeft":
+        case "h":
+          prev();
+          return true;
+        case "Home":
+          go(0);
+          return true;
+        case "End":
+          go(steps.length - 1);
+          return true;
+        case "?":
+          openHelp();
+          return true;
+        case "Enter":
+          if (onButton) return false; // let the focused button do its own thing
+          if (step.kind === "review") submit();
+          else {
+            view?.confirmFocused();
+            next();
+          }
+          return true;
+      }
+      if (step.kind === "review") {
+        if (key === "a" || key === "A") {
+          acceptAll();
+          return true;
+        }
+        return false;
+      }
+      if (!view) return false;
+      switch (key) {
+        case "ArrowDown":
+        case "j":
+          view.move(1);
+          return true;
+        case "ArrowUp":
+        case "k":
+          view.move(-1);
+          return true;
+        case " ":
+          if (onButton) return false;
+          return view.toggleFocused();
+        case "o":
+        case "O":
+          view.chooseOther();
+          return true;
+        case "n":
+        case "N":
+          view.focusNotes();
+          return true;
+        case "r":
+        case "R":
+          view.applyRec();
+          return true;
+        case "d":
+        case "D":
+          view.setMode(state[step.q.id].mode === "defer" ? "answer" : "defer");
+          return true;
+        case "i":
+        case "I":
+          if (state[step.q.id].mode === "needs-info") view.setMode("answer");
+          else view.setMode("needs-info");
+          return true;
+        case "x":
+        case "X":
+        case "Backspace":
+        case "Delete":
+          view.clear();
+          return true;
+      }
+      if (/^[1-9]$/.test(key)) {
+        view.chooseIndex(Number(key) - 1);
+        return true;
+      }
+      return false;
+    })();
+    if (handled) event.preventDefault();
+  });
+
+  /* Submit */
+  let confirmArmed = false;
+  function resetSubmitConfirm() {
+    confirmArmed = false;
+    nextButton.classList.remove("confirm");
+    const step = steps[current];
+    if (!step) return;
+    if (step.kind === "review") nextButton.textContent = "Submit answers";
+    else {
+      nextButton.replaceChildren(
+        step.kind === "intro" ? "Start " : steps[current + 1]?.kind === "review" ? "Review " : "Next ",
+        el("span", { "aria-hidden": "true" }, "→"),
+      );
+    }
+  }
+
+  function payload() {
+    const answers = {};
+    for (const q of spec.questions) {
+      const s = state[q.id];
+      answers[q.id] = {
+        status: s.mode,
+        selected: [...s.selected],
+        other: s.otherOn ? s.other : "",
+        notes: s.notes,
+      };
+    }
+    return { answers, generalNotes: generalNotes?.value ?? "" };
+  }
+
+  function showDone(title, text) {
+    finished = true;
+    $("#main").hidden = true;
+    $("#bottom").hidden = true;
+    $("#rail").hidden = true;
+    $("#done-title").textContent = title;
+    $("#done-text").textContent = text;
+    $("#done").hidden = false;
+    window.scrollTo(0, 0);
+  }
+
+  async function submit() {
+    if (finished) return;
+    if (steps[current].kind !== "review") return go(steps.length - 1);
+    const open = spec.questions.filter((q) => statusOf(q) === "unanswered").length;
+    if (open > 0 && !confirmArmed) {
+      confirmArmed = true;
+      nextButton.classList.add("confirm");
+      nextButton.textContent = `Submit with ${open} unanswered?`;
+      return;
+    }
+    nextButton.disabled = true;
+    nextButton.textContent = "Sending…";
+    try {
+      const response = await fetch(`${api}/submit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload()),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+      try {
+        localStorage.removeItem(draftKey());
+      } catch {}
+      showDone(
+        "Answers sent",
+        body.delivered
+          ? "Claude has your answers. You can close this tab."
+          : `Saved. Claude was not waiting on this form, so ask it to collect them with await_user_answers (session ${sessionId}).`,
+      );
+    } catch (error) {
+      nextButton.disabled = false;
+      resetSubmitConfirm();
+      showBanner(`Could not submit: ${error.message}. Your answers are still here; try again.`);
+    }
+  }
+
+  function showBanner(text) {
+    const banner = $("#banner");
+    banner.textContent = text;
+    banner.hidden = !text;
+  }
+
+  /* Liveness: tell the user when Claude stopped waiting or the server went away. */
+  let notWaiting = 0;
+  async function poll() {
+    if (finished) return;
+    try {
+      const response = await fetch(`${api}/state`, { cache: "no-store" });
+      if (response.status === 404) return showBanner("This interview has expired on the server. Your draft is kept in this browser.");
+      const { state: s, waiting } = await response.json();
+      if (s === "submitted") return showDone("Already submitted", "These answers were already sent to Claude.");
+      if (s === "cancelled") return showBanner("Claude cancelled this interview. Your draft is kept in this browser.");
+      notWaiting = waiting ? 0 : notWaiting + 1;
+      showBanner(
+        notWaiting >= 2
+          ? `Claude is not waiting on this form right now. You can still submit: the answers are saved and Claude can collect them with await_user_answers (session ${sessionId}).`
+          : "",
+      );
+    } catch {
+      showBanner("Lost contact with the ask-user-rich server (was the Claude Code session closed?). Your draft is kept in this browser.");
+    }
+  }
+
+  async function boot() {
+    try {
+      const response = await fetch(api, { cache: "no-store" });
+      if (!response.ok) throw new Error(response.status === 404 ? "This interview was not found or has expired." : `HTTP ${response.status}`);
+      const data = await response.json();
+      spec = data.spec;
+      sessionId = data.id;
+      if (data.state === "submitted") return showDone("Already submitted", "These answers were already sent to Claude.");
+      render();
+      setInterval(poll, 4000);
+      poll();
+    } catch (error) {
+      $("#title").textContent = "Interview unavailable";
+      showBanner(error.message);
+      $("#bottom").hidden = true;
+    }
+  }
+  boot();
+})();

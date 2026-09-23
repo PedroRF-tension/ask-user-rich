@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Interview</title>
+    <script>
+      // Applied before first paint so a forced theme never flashes the other one.
+      try {
+        const t = localStorage.getItem("aur:theme");
+        if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+      } catch {}
+    </script>
+    <link rel="stylesheet" href="/assets/style.css" />
+  </head>
+  <body>
+    <header class="top">
+      <div class="wrap top-row">
+        <div class="top-title">
+          <span class="eyebrow">Claude is asking</span>
+          <h1 id="title">Loading…</h1>
+        </div>
+        <div class="top-tools">
+          <span id="progress" class="progress" aria-live="polite"></span>
+          <button type="button" id="help-open" class="ghost icon" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
+          <button type="button" id="theme" class="ghost" title="Switch theme">Theme: auto</button>
+        </div>
+      </div>
+      <div class="wrap">
+        <nav id="rail" class="rail" aria-label="Questions"></nav>
+      </div>
+      <div class="bar" aria-hidden="true"><div id="bar-fill" class="bar-fill"></div></div>
+    </header>
+
+    <main class="wrap" id="main">
+      <div id="banner" class="banner" role="status" hidden></div>
+      <div id="steps" class="steps"></div>
+    </main>
+
+    <footer class="bottom" id="bottom">
+      <div class="wrap bottom-row">
+        <button type="button" id="prev" class="ghost nav-btn"><span aria-hidden="true">←</span> Back</button>
+        <div class="bottom-mid">
+          <span id="footer-status" class="muted"></span>
+          <span class="hint muted"><kbd>←</kbd><kbd>→</kbd> move · <kbd>1</kbd>–<kbd>9</kbd> pick · <kbd>N</kbd> note · <kbd>?</kbd> all shortcuts</span>
+        </div>
+        <button type="button" id="next" class="primary nav-btn">Next <span aria-hidden="true">→</span></button>
+      </div>
+    </footer>
+
+    <section id="done" class="done wrap" hidden>
+      <h2 id="done-title">Answers sent</h2>
+      <p id="done-text" class="muted">Claude has your answers. You can close this tab.</p>
+    </section>
+
+    <dialog id="help" class="help" aria-labelledby="help-title">
+      <div class="help-head">
+        <h2 id="help-title">Keyboard shortcuts</h2>
+        <button type="button" class="ghost" id="help-close">Close <kbd>Esc</kbd></button>
+      </div>
+      <div class="help-cols">
+        <section>
+          <h3>Moving</h3>
+          <dl>
+            <dt><kbd>←</kbd> <kbd>→</kbd> <span class="or">or</span> <kbd>H</kbd> <kbd>L</kbd></dt><dd>Previous / next screen</dd>
+            <dt><kbd>Enter</kbd></dt><dd>Next screen. With nothing picked on a single-choice question, it first picks the focused option. On the review screen, submits.</dd>
+            <dt><kbd>Ctrl</kbd> <kbd>Enter</kbd></dt><dd>Next / submit, even while typing</dd>
+            <dt><kbd>Home</kbd> <kbd>End</kbd></dt><dd>First screen / review screen</dd>
+            <dt><kbd>Tab</kbd></dt><dd>Options → Other → answer mode → note → Back / Next</dd>
+            <dt><kbd>Esc</kbd></dt><dd>Leave a text field so single-key shortcuts work again</dd>
+          </dl>
+        </section>
+        <section>
+          <h3>Answering</h3>
+          <dl>
+            <dt><kbd>↑</kbd> <kbd>↓</kbd> <span class="or">or</span> <kbd>K</kbd> <kbd>J</kbd></dt><dd>Move between options</dd>
+            <dt><kbd>Space</kbd></dt><dd>Pick / unpick the focused option</dd>
+            <dt><kbd>1</kbd>–<kbd>9</kbd></dt><dd>Pick an option by its number</dd>
+            <dt><kbd>O</kbd></dt><dd>Other: type your own answer</dd>
+            <dt><kbd>R</kbd></dt><dd>Take Claude's recommendation</dd>
+            <dt><kbd>N</kbd></dt><dd>Write a note for Claude</dd>
+            <dt><kbd>D</kbd></dt><dd>Defer (press again to undo)</dd>
+            <dt><kbd>I</kbd></dt><dd>Need more info (opens the note)</dd>
+            <dt><kbd>X</kbd> <span class="or">or</span> <kbd>⌫</kbd></dt><dd>Clear the answer</dd>
+            <dt><kbd>A</kbd></dt><dd>On review: accept every recommendation still unanswered</dd>
+          </dl>
+        </section>
+      </div>
+    </dialog>
+
+    <script src="/assets/marked.js"></script>
+    <script src="/assets/purify.js"></script>
+    <script src="/assets/app.js"></script>
+  </body>
+</html>
