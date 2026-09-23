@@ -23,6 +23,7 @@
         </div>
         <div class="top-tools">
           <span id="progress" class="progress" aria-live="polite"></span>
+          <button type="button" id="view" class="ghost view-toggle" title="Switch between one question per screen and all questions (V)" aria-pressed="false">Show all</button>
           <button type="button" id="help-open" class="ghost icon" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
           <button type="button" id="theme" class="ghost" title="Switch theme">Theme: auto</button>
         </div>
@@ -43,7 +44,7 @@
         <button type="button" id="prev" class="ghost nav-btn"><span aria-hidden="true">←</span> Back</button>
         <div class="bottom-mid">
           <span id="footer-status" class="muted"></span>
-          <span class="hint muted"><kbd>←</kbd><kbd>→</kbd> move · <kbd>1</kbd>–<kbd>9</kbd> pick · <kbd>N</kbd> note · <kbd>?</kbd> all shortcuts</span>
+          <span class="hint muted"><kbd>←</kbd><kbd>→</kbd> move · <kbd>1</kbd>–<kbd>9</kbd> pick · <kbd>N</kbd> note · <kbd>V</kbd> show all · <kbd>?</kbd> all shortcuts</span>
         </div>
         <button type="button" id="next" class="primary nav-btn">Next <span aria-hidden="true">→</span></button>
       </div>
@@ -67,6 +68,7 @@
             <dt><kbd>Enter</kbd></dt><dd>Next screen. With nothing picked on a single-choice question, it first picks the focused option. On the review screen, submits.</dd>
             <dt><kbd>Ctrl</kbd> <kbd>Enter</kbd></dt><dd>Next / submit, even while typing</dd>
             <dt><kbd>Home</kbd> <kbd>End</kbd></dt><dd>First screen / review screen</dd>
+            <dt><kbd>V</kbd></dt><dd>Show all questions on one page / back to one per screen</dd>
             <dt><kbd>Tab</kbd></dt><dd>Options → Other → answer mode → note → Back / Next</dd>
             <dt><kbd>Esc</kbd></dt><dd>Leave a text field so single-key shortcuts work again</dd>
           </dl>

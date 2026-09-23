@@ -38,10 +38,77 @@
 
   const kbd = (key) => el("kbd", {}, key);
 
+  /* Scroll following. Focus never scrolls natively (every focus() passes preventScroll); instead, focus that
+     came from the keyboard glides into a comfort band between the sticky header and the fixed footer. */
+  let lastInput = "keyboard";
+  let followSuppressed = 0;
+  let pendingScrollTop = null; // target of an in-flight smooth scroll, so rapid key presses chain instead of undershooting
+  document.addEventListener("keydown", () => (lastInput = "keyboard"), true);
+  document.addEventListener("pointerdown", () => (lastInput = "pointer"), true);
+  window.addEventListener("scrollend", () => (pendingScrollTop = null));
+  window.addEventListener("wheel", () => (pendingScrollTop = null), { passive: true });
+
+  function visibleBand() {
+    const top = $(".top").getBoundingClientRect().bottom;
+    const bottom = $("#bottom").hidden ? innerHeight : $("#bottom").getBoundingClientRect().top;
+    return { top, bottom, height: bottom - top };
+  }
+
+  function scrollToY(y, { smooth = true } = {}) {
+    const max = document.documentElement.scrollHeight - innerHeight;
+    const target = Math.max(0, Math.min(max, Math.round(y)));
+    if (Math.abs(target - (pendingScrollTop ?? scrollY)) < 2) return;
+    const behavior = smooth && !reduceMotion.matches ? "smooth" : "instant";
+    pendingScrollTop = behavior === "smooth" ? target : null;
+    window.scrollTo({ top: target, behavior });
+  }
+
+  /**
+   * comfort: keep the element inside the middle half of the visible band (the page follows along as you move).
+   * nearest: only scroll when it would leave the band (used while a textarea grows under the caret).
+   */
+  function follow(node, { mode = "comfort" } = {}) {
+    if (!node?.getBoundingClientRect) return;
+    const band = visibleBand();
+    const base = pendingScrollTop ?? scrollY;
+    const rect = node.getBoundingClientRect();
+    const top = rect.top + scrollY - base; // where the element will sit once the pending scroll lands
+    const bottom = top + rect.height;
+    const margin = 16;
+    let delta = 0;
+    if (mode === "nearest") {
+      if (top < band.top + margin) delta = top - (band.top + margin);
+      else if (bottom > band.bottom - margin) delta = bottom - (band.bottom - margin);
+    } else if (rect.height > band.height * 0.5) {
+      delta = top - (band.top + band.height * 0.12); // tall option (big preview): pin its top near the header
+    } else {
+      const lo = band.top + band.height * 0.25;
+      const hi = band.top + band.height * 0.75;
+      if (top < lo) delta = top - lo;
+      else if (bottom > hi) delta = bottom - hi;
+    }
+    if (delta) scrollToY(base + delta);
+  }
+
+  function quietly(fn) {
+    followSuppressed += 1;
+    try {
+      return fn();
+    } finally {
+      followSuppressed -= 1;
+    }
+  }
+
+  document.addEventListener("focusin", (event) => {
+    if (followSuppressed || lastInput !== "keyboard" || !(event.target instanceof HTMLElement)) return;
+    if (event.target.closest("#steps")) follow(event.target);
+  });
+
   function autogrow(textarea) {
     const grow = () => {
       textarea.style.height = "auto";
       textarea.style.height = `${Math.min(textarea.scrollHeight + 2, 480)}px`;
+      if (document.activeElement === textarea && !followSuppressed) follow(textarea, { mode: "nearest" });
     };
     textarea.addEventListener("input", grow);
     textarea.grow = grow;
@@ -135,7 +202,7 @@
       step.chip.title = `${step.index + 1}. ${step.q.header} (${STATUS_TEXT[status].toLowerCase()})`;
     }
     resetSubmitConfirm();
-    if (steps[current]?.kind === "review") renderReview();
+    if (steps[current]?.kind === "review" || view === "all") renderReview();
   }
 
   function changed(q) {
@@ -196,7 +263,7 @@
       }
       s.mode = "answer";
       changed(q);
-      if (s.otherOn && focusText) otherText.focus();
+      if (s.otherOn && focusText) otherText.focus({ preventScroll: true });
     };
     if (q.allowOther) {
       otherText = el("textarea", {
@@ -262,7 +329,7 @@
     const setMode = (mode) => {
       s.mode = mode;
       changed(q);
-      if (mode === "needs-info") notes.focus();
+      if (mode === "needs-info") notes.focus({ preventScroll: true });
     };
     const modeButtons = [
       ["answer", "Answer", null],
@@ -374,11 +441,11 @@
       clear,
       applyRec,
       chooseOther: () => (otherText ? chooseOther() : undefined),
-      focusNotes: () => notes.focus(),
+      focusNotes: () => notes.focus({ preventScroll: true }),
       chooseIndex(i) {
         if (i < optionRows.length) {
           choose(optionRows[i].option.id);
-          optionRows[i].row.focus({ preventScroll: false });
+          optionRows[i].row.focus({ preventScroll: true });
         }
       },
       move(delta) {
@@ -386,7 +453,7 @@
         const at = focusables.indexOf(document.activeElement);
         const from = at >= 0 ? at : delta > 0 ? roving - 1 : roving + 1;
         setRoving(from + delta);
-        focusables[roving].focus();
+        focusables[roving].focus({ preventScroll: true });
       },
       toggleFocused() {
         const at = focusables.indexOf(document.activeElement);
@@ -511,10 +578,99 @@
     document.title = step.kind === "q" ? `${step.index + 1}/${spec.questions.length} · ${spec.title}` : spec.title;
   }
 
+  /* View: "stepper" shows one screen at a time; "all" stacks every screen and scrolls between them. */
+  const viewButton = $("#view");
+  let view = localStorage.getItem("aur:view") === "all" ? "all" : "stepper";
+  let spyPaused = false;
+  let spyTimer = null;
+  const growAll = (root) => quietly(() => root.querySelectorAll("textarea").forEach((t) => t.grow?.()));
+  // Where the window must scroll for a screen's top to sit just under the sticky header.
+  const stepScrollY = (step) => step.el.getBoundingClientRect().top + scrollY - visibleBand().top - 14;
+
+  function pauseSpy() {
+    spyPaused = true;
+    clearTimeout(spyTimer);
+    spyTimer = setTimeout(() => (spyPaused = false), 1500); // no scrollend fires when the scroll was a no-op
+  }
+  window.addEventListener("scrollend", () => {
+    spyPaused = false;
+    clearTimeout(spyTimer);
+  });
+
+  function applyView() {
+    document.body.dataset.view = view;
+    viewButton.replaceChildren(view === "all" ? "One by one" : "Show all", kbd("V"));
+    viewButton.setAttribute("aria-pressed", String(view === "all"));
+    steps.forEach((s, i) => {
+      s.el.hidden = view === "stepper" && i !== current;
+      s.el.classList.remove("enter-fwd", "enter-back");
+    });
+    growAll($("#steps"));
+    if (view === "all") {
+      renderReview();
+      pauseSpy();
+      scrollToY(stepScrollY(steps[current]), { smooth: false });
+    } else scrollToY(0, { smooth: false });
+    updateNav();
+  }
+
+  function toggleView() {
+    view = view === "all" ? "stepper" : "all";
+    try {
+      localStorage.setItem("aur:view", view);
+    } catch {}
+    applyView();
+    quietly(focusStep);
+  }
+  viewButton.addEventListener("click", toggleView);
+
+  let spyFrame = 0;
+  window.addEventListener(
+    "scroll",
+    () => {
+      if (view !== "all" || spyPaused || finished || !steps.length || spyFrame) return;
+      spyFrame = requestAnimationFrame(() => {
+        spyFrame = 0;
+        const band = visibleBand();
+        const line = band.top + band.height * 0.3;
+        let index = 0;
+        steps.forEach((s, i) => {
+          if (s.el.getBoundingClientRect().top <= line) index = i;
+        });
+        if (innerHeight + scrollY >= document.documentElement.scrollHeight - 2) index = steps.length - 1;
+        if (index !== current) {
+          current = index;
+          updateNav();
+          saveDraft();
+        }
+      });
+    },
+    { passive: true },
+  );
+  // In the stacked view, clicking or tabbing into another screen makes it the current one.
+  document.addEventListener("focusin", (event) => {
+    if (view !== "all" || !(event.target instanceof Node)) return;
+    const index = steps.findIndex((s) => s.el.contains(event.target));
+    if (index >= 0 && index !== current) {
+      current = index;
+      updateNav();
+      saveDraft();
+    }
+  });
+
   function go(to, { animate = true, focus = true } = {}) {
     to = Math.max(0, Math.min(steps.length - 1, to));
+    if (view === "all") {
+      current = to;
+      pauseSpy();
+      scrollToY(stepScrollY(steps[to]), { smooth: animate });
+      updateNav();
+      if (focus) quietly(focusStep);
+      saveDraft();
+      return;
+    }
     if (to === current && steps[to].el.hidden === false) {
-      if (focus) focusStep();
+      if (focus) quietly(focusStep);
       return;
     }
     const from = steps[current];
@@ -531,10 +687,14 @@
       step.el.classList.add(`enter-${dir}`);
     }
     // Textareas measured while hidden report 0 height.
-    step.el.querySelectorAll("textarea").forEach((t) => t.grow?.());
-    window.scrollTo({ top: 0 });
+    growAll(step.el);
+    // A new screen starts at the top at once; only then does the focused option glide into the comfort band.
+    scrollToY(0, { smooth: false });
     updateNav();
-    if (focus) focusStep();
+    if (focus) {
+      quietly(focusStep);
+      if (lastInput === "keyboard" && step.kind === "q") follow(document.activeElement);
+    }
     saveDraft();
   }
 
@@ -587,9 +747,9 @@
 
     for (const q of spec.questions) views[q.id].sync();
     refreshSummary();
-    const start = Number.isInteger(draft?.step) ? Math.min(draft.step, steps.length - 1) : 0;
-    current = start;
-    go(start, { animate: false });
+    current = Number.isInteger(draft?.step) ? Math.min(draft.step, steps.length - 1) : 0;
+    applyView();
+    quietly(focusStep);
   }
 
   /* Keyboard */
@@ -656,6 +816,10 @@
           return true;
         case "?":
           openHelp();
+          return true;
+        case "v":
+        case "V":
+          toggleView();
           return true;
         case "Enter":
           if (onButton) return false; // let the focused button do its own thing
