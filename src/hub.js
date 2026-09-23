@@ -98,6 +98,9 @@ export class InterviewHub {
       createdAt: Date.now(),
       state: "pending",
       result: null,
+      // Bumped by every append, so a form built from an older spec cannot submit over the new questions.
+      version: 1,
+      lastNote: null,
       pageViews: 0,
       waiters: 0,
     };
@@ -127,6 +130,15 @@ export class InterviewHub {
       this.byId.delete(session.id);
     }, FINISHED_TTL_MS).unref();
     return true;
+  }
+
+  /** Adds follow-up questions to a pending session. The caller has already validated them. */
+  append(session, questions, note) {
+    if (session.state !== "pending") throw new Error(`interview already ${session.state}`);
+    session.spec.questions.push(...questions);
+    session.version += 1;
+    if (note !== undefined) session.lastNote = { version: session.version, text: note };
+    return session.version;
   }
 
   cancel(session, reason) {
@@ -203,10 +215,17 @@ export class InterviewHub {
       const action = api[2] ?? "";
 
       if (req.method === "GET" && action === "") {
-        return send(res, 200, { id: session.id, state: session.state, spec: session.spec, result: session.result });
+        return send(res, 200, {
+          id: session.id,
+          state: session.state,
+          version: session.version,
+          note: session.lastNote ?? null,
+          spec: session.spec,
+          result: session.result,
+        });
       }
       if (req.method === "GET" && action === "/state") {
-        return send(res, 200, { state: session.state, waiting: session.waiters > 0 });
+        return send(res, 200, { state: session.state, waiting: session.waiters > 0, version: session.version });
       }
       if (req.method === "POST" && action === "/submit") {
         // A JSON content type forces a CORS preflight, which this server never answers, so
@@ -220,6 +239,10 @@ export class InterviewHub {
           payload = JSON.parse(await readBody(req));
         } catch (error) {
           return send(res, 400, { error: `invalid JSON: ${error.message}` });
+        }
+        // Omitting specVersion is accepted, for callers that predate appends.
+        if (payload && payload.specVersion !== undefined && payload.specVersion !== session.version) {
+          return send(res, 409, { error: "new questions were added", version: session.version });
         }
         let result;
         try {

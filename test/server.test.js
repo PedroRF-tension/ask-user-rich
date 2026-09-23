@@ -116,15 +116,15 @@ describe("ask-user-rich over stdio", () => {
     await conn.client.close();
   });
 
-  test("tools/list exposes both tools with the full question schema", async () => {
+  test("tools/list exposes every tool with the full question schema", async () => {
     const { tools } = await conn.client.listTools();
     const names = tools.map((t) => t.name).sort();
-    assert.deepEqual(names, ["ask_user_rich", "await_user_answers"]);
+    assert.deepEqual(names, ["append_questions", "ask_user_rich", "await_user_answers"]);
     const ask = tools.find((t) => t.name === "ask_user_rich");
     assert.deepEqual(ask.inputSchema.required.sort(), ["questions", "title"]);
     assert.deepEqual(Object.keys(ask.inputSchema.properties).sort(), ["delivery", "intro", "questions", "title"]);
     const question = ask.inputSchema.properties.questions.items;
-    for (const key of ["id", "header", "body", "options", "recommended", "rationale", "multiSelect", "allowOther", "dependsOn"]) {
+    for (const key of ["id", "header", "body", "kind", "options", "recommended", "rationale", "multiSelect", "allowOther", "dependsOn"]) {
       assert.ok(question.properties[key], `question schema lacks ${key}`);
     }
     const option = question.properties.options.items;
@@ -132,7 +132,13 @@ describe("ask-user-rich over stdio", () => {
     assert.equal(ask.inputSchema.properties.questions.maxItems, undefined, "questions must be unbounded");
     assert.equal(question.properties.options.maxItems, undefined, "options must be unbounded");
     assert.equal(question.properties.header.maxLength, undefined, "headers must not be length-capped");
+    assert.deepEqual(question.properties.kind.enum, ["choice", "rank"]);
+    const append = tools.find((t) => t.name === "append_questions");
+    assert.deepEqual(append.inputSchema.required.sort(), ["questions", "sessionId"]);
+    assert.deepEqual(Object.keys(append.inputSchema.properties).sort(), ["note", "questions", "sessionId"]);
+    assert.ok(append.inputSchema.properties.questions.items.properties.kind, "appended questions take the same schema");
     assert.match(conn.client.getInstructions(), /Prefer it over AskUserQuestion/);
+    assert.match(conn.client.getInstructions(), /append_questions/);
   });
 
   test("full round trip: progress while waiting, form served, submit returns structured answers", async () => {
@@ -150,7 +156,7 @@ describe("ask-user-rich over stdio", () => {
     assert.equal(data.state, "pending");
     assert.equal(data.spec.questions.length, 4);
     const state = await (await fetch(`${apiBase(url)}/state`)).json();
-    assert.deepEqual(state, { state: "pending", waiting: true });
+    assert.deepEqual(state, { state: "pending", waiting: true, version: 1 });
 
     await new Promise((r) => setTimeout(r, 450));
     const beforeSubmit = progress.length;
@@ -332,8 +338,8 @@ describe("ask-user-rich over stdio", () => {
 
     await new Promise((r) => setTimeout(r, 150));
     const state = await (await fetch(`${apiBase(url)}/state`)).json();
-    assert.deepEqual(state, { state: "pending", waiting: false }, "server stopped waiting but kept the form");
-    assert.ok((await conn.client.listTools()).tools.length === 2, "server still healthy after cancellation");
+    assert.deepEqual(state, { state: "pending", waiting: false, version: 1 }, "server stopped waiting but kept the form");
+    assert.ok((await conn.client.listTools()).tools.length === 3, "server still healthy after cancellation");
 
     const sessionId = (await (await fetch(apiBase(url))).json()).id;
     const pending = conn.client.callTool({ name: "await_user_answers", arguments: { sessionId } }, CallToolResultSchema, { timeout: 10000 });
@@ -357,6 +363,221 @@ describe("ask-user-rich over stdio", () => {
     assert.deepEqual(result.structuredContent.answers[0].selectedLabels, ["SQLite"]);
     const missing = await conn.client.callTool({ name: "await_user_answers", arguments: { sessionId: "nope" } });
     assert.equal(missing.isError, true);
+  });
+
+  test("rank round trip: the ordered ids come back with labels, and the summary joins them with >", async () => {
+    const interview = {
+      title: "Priorities",
+      questions: [
+        {
+          id: "order",
+          header: "Rank what ships first",
+          kind: "rank",
+          options: [
+            { id: "search", label: "Search" },
+            { id: "tags", label: "Tags" },
+            { id: "history", label: "History" },
+          ],
+          recommended: ["tags", "search", "history"],
+          allowOther: true,
+        },
+        {
+          id: "second",
+          header: "Rank the platforms",
+          kind: "rank",
+          options: [
+            { id: "web", label: "Web" },
+            { id: "mobile", label: "Mobile" },
+          ],
+          recommended: ["web", "mobile"],
+        },
+        { id: "untouched", header: "Rank again", kind: "rank", options: [{ id: "a", label: "A" }, { id: "b", label: "B" }] },
+        { id: "db", header: "Pick one", options: [{ id: "pg", label: "Postgres" }] },
+      ],
+    };
+    const { call, url: urlPromise } = startAsk(conn.client, interview);
+    const url = await urlPromise;
+    const data = await (await fetch(apiBase(url))).json();
+    assert.equal(data.spec.questions[0].kind, "rank");
+    assert.equal(data.spec.questions[0].allowOther, false, "rank questions never carry an Other field");
+    assert.equal(data.spec.questions[3].kind, "choice", "kind defaults to choice");
+
+    const response = await submit(url, {
+      answers: {
+        order: { status: "answer", ranked: ["tags", "search", "history"], other: "ignored", notes: "Tags unblock search." },
+        second: { status: "answer", ranked: ["mobile", "web"] },
+        untouched: { status: "answer" },
+        db: { status: "answer", selected: ["pg"] },
+      },
+    });
+    assert.equal(response.status, 200);
+    const s = (await call).structuredContent;
+    const [order, second, untouched, db] = s.answers;
+    assert.equal(order.status, "answered");
+    assert.deepEqual(order.ranked, ["tags", "search", "history"]);
+    assert.deepEqual(order.rankedLabels, ["Tags", "Search", "History"]);
+    assert.deepEqual(order.selected, []);
+    assert.deepEqual(order.selectedLabels, []);
+    assert.equal(order.other, null);
+    assert.equal(order.followedRecommendation, true);
+    assert.equal(order.notes, "Tags unblock search.");
+    assert.deepEqual(second.rankedLabels, ["Mobile", "Web"]);
+    assert.equal(second.followedRecommendation, false);
+    assert.equal(untouched.status, "unanswered", "a rank question without `ranked` is not answered");
+    assert.equal(untouched.ranked, null);
+    assert.equal(untouched.rankedLabels, null);
+    assert.equal(untouched.followedRecommendation, null);
+    assert.equal(db.ranked, null, "choice questions carry ranked: null");
+    assert.equal(db.rankedLabels, null);
+    assert.deepEqual(s.counts, { answered: 3, deferred: 0, needsInfo: 0, unanswered: 1 });
+    assert.match(s.summary, /\[order\] .* -> Tags > Search > History \(recommended\) \| notes:/);
+    assert.match(s.summary, /\[second\] .* -> Mobile > Web\n/);
+  });
+
+  test("rank questions are validated when asked and when submitted", async () => {
+    const options = [
+      { id: "a", label: "Alpha" },
+      { id: "b", label: "Beta" },
+      { id: "c", label: "Gamma" },
+    ];
+    const bad = await conn.client.callTool({
+      name: "ask_user_rich",
+      arguments: {
+        title: "Bad ranks",
+        questions: [
+          { id: "partial", header: "P", kind: "rank", options, recommended: ["a", "b", "zzz"] },
+          { id: "single", header: "S", kind: "rank", options, recommended: "a" },
+          { id: "multi", header: "M", kind: "rank", options, multiSelect: true },
+          { id: "lonely", header: "L", kind: "rank", options: [{ id: "only", label: "Only" }] },
+        ],
+      },
+    });
+    assert.equal(bad.isError, true);
+    const text = bad.content[0].text;
+    assert.match(text, /questions\[0\] \(partial\): recommended must list every option id exactly once.*missing "c".*not option ids: "zzz"/);
+    assert.match(text, /questions\[1\] \(single\): recommended on a rank question is the recommended order/);
+    assert.match(text, /questions\[2\] \(multi\): multiSelect does not apply to rank questions/);
+    assert.match(text, /questions\[3\] \(lonely\): a rank question needs at least 2 options/);
+    assert.doesNotMatch(text, /several recommended ids but multiSelect is false/, "choice-only checks skip rank questions");
+
+    const ok = await conn.client.callTool({
+      name: "ask_user_rich",
+      arguments: { title: "Rank", delivery: "link", questions: [{ id: "r", header: "R", kind: "rank", options, recommended: ["c", "b", "a"] }] },
+    });
+    assert.equal(ok.structuredContent.status, "awaiting");
+    const { url, sessionId } = ok.structuredContent;
+    for (const ranked of [["a", "b"], ["a", "b", "b"], ["a", "b", "c", "d"], "a"]) {
+      const response = await submit(url, { answers: { r: { status: "answer", ranked } } });
+      assert.equal(response.status, 422, `ranked ${JSON.stringify(ranked)} must be refused`);
+    }
+    const missing = await submit(url, { answers: { r: { status: "answer", ranked: ["a", "b"] } } });
+    assert.match((await missing.json()).error, /question "r": ranked must list every option id exactly once \(missing "c"\)/);
+    assert.equal((await submit(url, { answers: { r: { status: "defer", notes: "later" } } })).status, 200);
+    const result = await conn.client.callTool({ name: "await_user_answers", arguments: { sessionId } });
+    assert.equal(result.structuredContent.answers[0].status, "deferred");
+    assert.equal(result.structuredContent.answers[0].ranked, null);
+  });
+
+  test("append_questions adds follow-ups to an open form, versioned so a stale form cannot submit", async () => {
+    const first = await conn.client.callTool({ name: "ask_user_rich", arguments: { ...sampleInterview, delivery: "link" } });
+    const { url, sessionId } = first.structuredContent;
+
+    const appended = await conn.client.callTool({
+      name: "append_questions",
+      arguments: {
+        sessionId,
+        note: "Claude added 2 follow-up questions: **indexes**.",
+        questions: [
+          { id: "indexes", header: "Which composite indexes?", options: [{ id: "tag", label: "By tag" }, { id: "year", label: "By year" }], dependsOn: ["db"] },
+          { id: "order", header: "Rank the rollout", kind: "rank", options: [{ id: "x", label: "X" }, { id: "y", label: "Y" }], dependsOn: ["indexes"] },
+        ],
+      },
+    });
+    assert.notEqual(appended.isError, true, appended.content[0].text);
+    assert.deepEqual(appended.structuredContent, { status: "appended", sessionId, appended: 2, total: 6, version: 2, url });
+    assert.match(appended.content[0].text, /updates live/);
+    assert.match(appended.content[0].text, /await_user_answers/);
+    assert.match(conn.stderr(), /questions appended .*appended=2 total=6 version=2/);
+
+    const data = await (await fetch(apiBase(url))).json();
+    assert.equal(data.version, 2);
+    assert.equal(data.spec.questions.length, 6);
+    assert.equal(data.spec.questions[4].id, "indexes");
+    assert.equal(data.spec.questions[5].allowOther, false);
+    assert.deepEqual(data.note, { version: 2, text: "Claude added 2 follow-up questions: **indexes**." });
+    assert.equal((await (await fetch(`${apiBase(url)}/state`)).json()).version, 2);
+
+    const duplicate = await conn.client.callTool({
+      name: "append_questions",
+      arguments: { sessionId, questions: [{ id: "naming", header: "Again?", options: [] }] },
+    });
+    assert.equal(duplicate.isError, true);
+    assert.match(duplicate.content[0].text, /questions\[0\] \(naming\): duplicate question id "naming"/);
+    const forward = await conn.client.callTool({
+      name: "append_questions",
+      arguments: {
+        sessionId,
+        questions: [
+          { id: "p", header: "P", options: [], dependsOn: ["q"] },
+          { id: "q", header: "Q", options: [] },
+        ],
+      },
+    });
+    assert.equal(forward.isError, true);
+    assert.match(forward.content[0].text, /questions\[0\] \(p\): dependsOn "q" points at a later question/);
+    assert.equal((await (await fetch(apiBase(url))).json()).version, 2, "a rejected append changes nothing");
+
+    const stale = await submit(url, { specVersion: 1, answers: { db: { status: "answer", selected: ["sqlite"] } } });
+    assert.equal(stale.status, 409);
+    assert.deepEqual(await stale.json(), { error: "new questions were added", version: 2 });
+    assert.equal((await (await fetch(`${apiBase(url)}/state`)).json()).state, "pending", "a stale submit does not settle");
+
+    const waiting = conn.client.callTool({ name: "await_user_answers", arguments: { sessionId } }, CallToolResultSchema, { timeout: 10000 });
+    await new Promise((r) => setTimeout(r, 150));
+    const response = await submit(url, {
+      specVersion: 2,
+      answers: {
+        db: { status: "answer", selected: ["sqlite"] },
+        indexes: { status: "answer", selected: ["tag"] },
+        order: { status: "answer", ranked: ["y", "x"] },
+      },
+    });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).delivered, true);
+    const s = (await waiting).structuredContent;
+    assert.equal(s.answers.length, 6);
+    assert.deepEqual(s.answers[4].selectedLabels, ["By tag"]);
+    assert.deepEqual(s.answers[5].rankedLabels, ["Y", "X"]);
+    assert.match(s.summary, /\[indexes\] .* -> By tag/);
+
+    const late = await conn.client.callTool({
+      name: "append_questions",
+      arguments: { sessionId, questions: [{ id: "late", header: "Too late?", options: [] }] },
+    });
+    assert.equal(late.isError, true);
+    assert.match(late.content[0].text, /already submitted/);
+    const unknown = await conn.client.callTool({
+      name: "append_questions",
+      arguments: { sessionId: "nope", questions: [{ id: "x", header: "X", options: [] }] },
+    });
+    assert.equal(unknown.isError, true);
+    assert.match(unknown.content[0].text, /No interview with sessionId "nope"/);
+  });
+
+  test("append_questions reaches a blocking ask_user_rich call", async () => {
+    const { call, url: urlPromise } = startAsk(conn.client, sampleInterview);
+    const url = await urlPromise;
+    const sessionId = (await (await fetch(apiBase(url))).json()).id;
+    const appended = await conn.client.callTool({
+      name: "append_questions",
+      arguments: { sessionId, questions: [{ id: "extra", header: "Anything else?", options: [] }] },
+    });
+    assert.equal(appended.structuredContent.version, 2);
+    assert.equal((await (await fetch(apiBase(url))).json()).note, null, "no note was given");
+    await submit(url, { specVersion: 2, answers: { extra: { status: "answer", other: "No." } } });
+    const s = (await call).structuredContent;
+    assert.equal(s.answers.at(-1).id, "extra");
+    assert.equal(s.answers.at(-1).other, "No.");
   });
 
   test("submissions are archived to the log directory", () => {
@@ -417,6 +638,27 @@ describe("native elicitation mode", () => {
       assert.equal(s.via, "elicitation");
       assert.deepEqual(s.answers.map((a) => a.status), ["answered", "answered", "answered", "answered"]);
       assert.equal(s.answers[2].other, "qb");
+    } finally {
+      await conn.client.close();
+    }
+  });
+
+  test("falls back to the browser form when a rank question is present, even if the client can elicit", async () => {
+    const conn = await connect({ capabilities: { elicitation: { form: {} } }, env: { ASK_USER_RICH_OPEN: "0" } });
+    let elicited = false;
+    conn.client.setRequestHandler(ElicitRequestSchema, async () => {
+      elicited = true;
+      return { action: "cancel" };
+    });
+    try {
+      const rank = { id: "order", header: "Order these", kind: "rank", options: [{ id: "a", label: "A" }, { id: "b", label: "B" }] };
+      const result = await conn.client.callTool({
+        name: "ask_user_rich",
+        arguments: { ...sampleInterview, questions: [...sampleInterview.questions, rank], delivery: "elicitation" },
+      });
+      assert.equal(elicited, false, "native forms cannot rank, so no elicitation is sent");
+      assert.equal(result.structuredContent.status, "awaiting");
+      assert.match(conn.stderr(), /elicitation cannot rank; falling back to browser/);
     } finally {
       await conn.client.close();
     }

@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { AskInputShape, AwaitInputShape, recommendedIds, semanticProblems } from "./schema.js";
+import { AppendInputShape, AskInputShape, AwaitInputShape, normalizeQuestion, recommendedIds, semanticProblems } from "./schema.js";
 import { buildResult, summarize } from "./answers.js";
 import { InterviewHub } from "./hub.js";
 import { archiveResult, log, logDir } from "./log.js";
 import { openBrowser } from "./opener.js";
 
-const VERSION = "0.2.0";
+const VERSION = "0.3.0";
 const PROGRESS_MS = Number(process.env.ASK_USER_RICH_PROGRESS_MS || 15000);
 const ELICIT_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 
@@ -36,11 +36,16 @@ const mcp = new McpServer(
         "prerequisites come first.",
       "- A question with no options and allowOther: false, which can never be answered.",
       "- Duplicate question ids, or duplicate option ids within one question.",
+      "- A rank question (kind: \"rank\") with fewer than 2 options, with multiSelect: true, or with a `recommended` " +
+        "that is not an array holding every option id exactly once (the recommended order).",
       "",
       "After the call:",
       "- If it returns status \"awaiting\" with a URL (the browser could not be opened, e.g. WSL without interop, or " +
         "delivery=link), show the user the URL as a clickable link, then call await_user_answers with the sessionId. " +
         "Do not ask the questions again in chat.",
+      "- To ask follow-ups while the form is still open (ask_user_rich returned \"awaiting\", or an ask_user_rich / " +
+        "await_user_answers call is still waiting in the background), call append_questions with the sessionId " +
+        "instead of opening a second form. The open form updates live.",
       "- Treat deferred and needs-info answers as open, not as consent: follow up on needs-info with the missing " +
         "context, and do not act on a deferred question.",
       "- Read the notes: users often put the real constraint there.",
@@ -202,11 +207,13 @@ mcp.registerTool(
       "to argue for.\n\n" +
       "Each question has an id, a header, a markdown body, options (id, label, markdown description, optional " +
       "markdown/code preview), an optional recommended option id plus rationale, multiSelect, allowOther " +
-      "(free text, default true) and dependsOn (earlier question ids, display only). The user can also defer a " +
-      "question, mark it as needing more info, and leave notes.\n\n" +
+      "(free text, default true) and dependsOn (earlier question ids, display only). Set kind: \"rank\" to have the " +
+      "user order every option by priority instead of picking (returns `ranked`; `recommended` is then the full " +
+      "recommended order). The user can also defer a question, mark it as needing more info, and leave notes.\n\n" +
       "Blocks until the user submits (it may take minutes; in Claude Code a long call continues as a background " +
       "task). Returns `summary` (one line per question) plus, for each question, its status " +
-      "(answered | deferred | needs-info | unanswered), selected option ids and labels, other text, notes, and " +
+      "(answered | deferred | needs-info | unanswered), selected option ids and labels, ranked ids and labels " +
+      "(rank questions), other text, notes, and " +
       "whether the recommendation was followed. Act on deferred and needs-info items instead of assuming answers. " +
       "If the browser cannot be opened, returns the URL and a sessionId: show the URL, then call await_user_answers.\n\n" +
       "Ids (question and option) are ASCII only, [A-Za-z0-9_.:-]: `secao-tabs`, never `seção-tabs`. " +
@@ -217,11 +224,14 @@ mcp.registerTool(
   async (args, extra) => {
     const problems = semanticProblems(args);
     if (problems.length > 0) return errorResult(`Invalid interview:\n- ${problems.join("\n- ")}`);
+    args.questions = args.questions.map(normalizeQuestion);
     log("ask_user_rich called", { title: args.title, questions: args.questions.length, delivery: args.delivery });
 
     if (args.delivery === "elicitation") {
-      if (clientCanElicitForms()) return askByElicitation(args, extra);
-      log("elicitation unsupported by client; falling back to browser");
+      // Native forms have no ordering control, so a rank question needs the browser form.
+      if (args.questions.some((q) => q.kind === "rank")) log("elicitation cannot rank; falling back to browser");
+      else if (clientCanElicitForms()) return askByElicitation(args, extra);
+      else log("elicitation unsupported by client; falling back to browser");
     }
 
     await hub.start();
@@ -255,6 +265,55 @@ mcp.registerTool(
     if (session.state === "submitted") return answersResult(session.result);
     if (session.state === "cancelled") return errorResult(`Interview "${sessionId}" was cancelled.`);
     return waitWithProgress(session, extra, hub.url(session));
+  },
+);
+
+mcp.registerTool(
+  "append_questions",
+  {
+    title: "Add follow-up questions to an open interview",
+    description:
+      "Append follow-up questions to an interview whose form is still open, instead of opening a second form. " +
+      "Use it after ask_user_rich returned status \"awaiting\", or while a backgrounded ask_user_rich / " +
+      "await_user_answers call is still waiting: the open form updates live, shows the optional `note` as a " +
+      "banner, and the user answers everything in one submit.\n\n" +
+      "Questions take the same shape and rules as in ask_user_rich. Ids must be unique across the whole " +
+      "interview; dependsOn may name any existing question or an earlier one in this call. Returns at once; " +
+      "the answers arrive through the call that is already waiting, or through await_user_answers. Fails once " +
+      "the user has submitted: then ask a new interview.",
+    inputSchema: AppendInputShape,
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+  async ({ sessionId, questions, note }) => {
+    const session = hub.get(sessionId);
+    if (!session) return errorResult(`No interview with sessionId "${sessionId}" (it may have expired or the server restarted).`);
+    if (session.state !== "pending") {
+      return errorResult(
+        `Interview "${sessionId}" is already ${session.state}, so questions can no longer be appended. ` +
+          "Ask the follow-ups in a new ask_user_rich call.",
+      );
+    }
+    const existing = session.spec.questions.length;
+    const problems = semanticProblems({ questions: [...session.spec.questions, ...questions] }, { startIndex: existing });
+    if (problems.length > 0) return errorResult(`Invalid follow-up questions:\n- ${problems.join("\n- ")}`);
+
+    const version = hub.append(session, questions.map(normalizeQuestion), note);
+    const total = session.spec.questions.length;
+    const url = hub.url(session);
+    log("questions appended", { id: session.id, appended: questions.length, total, version, note: note ? "yes" : "no" });
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            `Appended ${questions.length} question(s) to "${session.spec.title}" (now ${total}, version ${version}). ` +
+            `The open form at ${url} updates live.\n` +
+            `Keep waiting for the submit: an ask_user_rich or await_user_answers call that is already waiting returns ` +
+            `once the user submits; otherwise call await_user_answers with sessionId "${session.id}".`,
+        },
+      ],
+      structuredContent: { status: "appended", sessionId: session.id, appended: questions.length, total, version, url },
+    };
   },
 );
 

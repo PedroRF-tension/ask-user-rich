@@ -1,6 +1,6 @@
 {
   "name": "ask-user-rich",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "MCP server: long structured interviews answered in a local browser form",
   "type": "module",

@@ -22,7 +22,11 @@ Each question has:
 - `options`, with no upper bound. Each option has an `id`, a `label`, a markdown `description` and an
   optional markdown `preview`, such as a fenced code block. An empty `options` list makes the question
   free-text only.
-- `recommended`: an option id, or an array of ids when `multiSelect` is on;
+- `kind`: `choice` (default) or `rank`. A rank question has the user put every option in order of priority,
+  by dragging or from the keyboard. It needs at least 2 options, takes no `multiSelect`, and has no Other
+  field.
+- `recommended`: an option id, or an array of ids when `multiSelect` is on. For a rank question it is the
+  recommended order: an array holding every option id exactly once.
 - `rationale` (markdown);
 - `multiSelect`;
 - `allowOther`: free text, default `true`;
@@ -39,6 +43,20 @@ The form is a stepper that shows one question per screen:
 - Screens slide in from the direction you move, and the slide is skipped when `prefers-reduced-motion` is set.
 - Each question shows its recommendation and rationale, single or multi select, Other text, a note, and an
   Answer / Defer / Need more info switch. "Builds on" links jump to the earlier question.
+- A rank question shows numbered rows. You can drag them with the mouse or move them from the keyboard
+  (see the table), and the other rows slide aside. Nothing is recorded until you move a row or press
+  "Keep this order" (`C`), so Claude never mistakes the default order for a deliberate ranking.
+- **Show all** (`V`, or the header button) stacks every screen on one page. The rail then scrolls to a
+  question instead of switching screens, and it tracks the question you are reading as you scroll. The
+  choice is remembered.
+- **Scrolling follows the keyboard.** When focus moves by keyboard (arrows, Tab, `N`, `O`, …), the page
+  scrolls smoothly so the focused item stays in the middle half of the space between the header and the
+  footer. It no longer waits until the item is off screen. A tall option, such as one with a big preview,
+  is pinned near the top instead. Mouse clicks never scroll the page.
+- **Live follow-ups.** When Claude calls `append_questions`, the open form picks up the new questions
+  within about 2.5 s: new rail chips carry a dot, a notice shows Claude's note, and `G` jumps to the first
+  new question. If a submit races an append, the server refuses it (409). The form then pulls in the new
+  questions and asks you to look at them before submitting again, so no question is lost unseen.
 
 Everything can be done from the keyboard (press `?` in the form for the same table):
 
@@ -57,6 +75,12 @@ Everything can be done from the keyboard (press `?` in the form for the same tab
 | `D` / `I` | Toggle Defer / Need more info. `I` also focuses the note. |
 | `X` / `Backspace` | Clear the answer |
 | `A` | On the review screen: accept every recommendation that is still unanswered |
+| `V` | Show all questions on one page / back to one per screen |
+| `G` | Go to the follow-up questions Claude just added |
+| Rank: `Space`, then `↑` `↓`, then `Space` / `Enter` | Pick up the focused row, move it, drop it. `Esc` cancels and restores the order. |
+| Rank: `Shift` + `↑` `↓` | Move the focused row directly |
+| Rank: `1`–`9` | Send the focused row to that position |
+| Rank: `C` / `R` / `X` | Keep the order as shown / apply the recommended order / reset |
 | `Esc` | Leave a text field so the single-key shortcuts work again |
 | `Tab` | Options → Other → answer mode → note → Back / Next |
 
@@ -66,8 +90,11 @@ were on. If Claude stops waiting, the page says so and the answers can still be 
 
 The result has:
 - `structuredContent`: `{ summary, interviewId, title, status, via, submittedAt, durationSeconds, counts, generalNotes, answers[] }`.
-  Each `answers[]` entry is `{ id, header, status, selected, selectedLabels, other, notes, followedRecommendation }`,
+  Each `answers[]` entry is `{ id, header, status, selected, selectedLabels, other, ranked, rankedLabels, notes, followedRecommendation }`,
   where `status` is `answered`, `deferred`, `needs-info` or `unanswered`.
+  - `ranked` and `rankedLabels` give the order for an answered rank question, and are `null` otherwise.
+  - For a rank question, `followedRecommendation` means the order matches the recommendation exactly. The
+    summary line reads `A > B > C`.
 - `content`: the same summary as text, followed by the JSON.
 
 Claude Code 2.1.280 gave the model only `structuredContent` and dropped the text blocks when both were
@@ -83,11 +110,36 @@ known:
   also rejected.
 - **Bad `dependsOn`.** A `dependsOn` that names a later question is rejected with "move X before Y". One
   that names an unknown id, or the question itself, is rejected too.
+- **Bad rank questions.** A rank question is rejected if it has fewer than 2 options or has
+  `multiSelect`. It is also rejected if its `recommended` is not a full order: the error names the missing,
+  repeated or unknown ids.
 - **Duplicate ids.**
 - **A question that cannot be answered at all**: no options and `allowOther: false`.
 
 The MCP `instructions` and the tool description list these same mistakes, so the model sees them before
 the first call, not after the first rejection.
+
+### `append_questions`
+
+Takes `{ sessionId, questions, note? }` and adds follow-up questions to an interview whose form is still
+open. It returns at once with `{ status: "appended", sessionId, appended, total, version, url }`.
+
+Use it when `ask_user_rich` returned "awaiting", or while an `ask_user_rich` or `await_user_answers` call
+is still waiting in the background. The user answers everything in one submit, and the answers arrive
+through the call that is already waiting (or through `await_user_answers`).
+
+The questions follow the same rules as in `ask_user_rich`:
+- ids must be unique across the whole interview;
+- `dependsOn` may name any existing question, or an earlier question in the same call.
+
+Error numbering starts at `questions[0]`, the first appended question. Once the user has submitted,
+the call fails and tells the model to ask a new interview instead.
+
+HTTP contract behind it:
+- Every append increments the session's `version`. `GET /api/s/:token` and `/state` report the current
+  version, and `GET /api/s/:token` also returns `note`.
+- A submit carrying an outdated `specVersion` gets a 409 with the current `version`.
+- A submit that leaves `specVersion` out is still accepted.
 
 ### `await_user_answers`
 
@@ -111,13 +163,28 @@ has already submitted, it returns at once.
 
 ## Delivery modes
 
-- `browser` opens the form with `explorer.exe` on WSL, `open` on macOS or `xdg-open` on Linux. If that
-  fails, the tool returns the URL and a `sessionId` right away instead of blocking; Claude shows the link
-  and calls `await_user_answers`.
+- `browser` opens the form with `open` on macOS, `cmd /c start` on Windows, and `xdg-open` on Linux.
+  - **On WSL with interop enabled**, it tries `wslview`, then `explorer.exe`, then `cmd.exe /c start` and
+    `powershell.exe Start-Process`, stopping at the first that works. It skips any that aren't installed.
+    `cmd.exe` and `powershell.exe` run with `/mnt/c` as their working directory. The URL is always passed
+    as an argument, never built into a shell string. `cmd.exe` is also skipped for URLs with characters
+    it would reinterpret.
+  - **On WSL with interop disabled**, no Windows opener can run, so none is tried. It uses `xdg-open` only
+    if all of these hold:
+    - a Linux GUI is available (`DISPLAY` or `WAYLAND_DISPLAY` is set);
+    - `xdg-open` and `xdg-mime` are installed;
+    - `xdg-mime` names a real https handler that isn't `wslview`.
+
+    This is strict on purpose. Reporting "opened" for a browser that never appeared would make the tool
+    wait on a form nobody can see.
+  - If every opener fails, the tool returns the URL and a `sessionId` right away instead of blocking.
+    The reason lists what was tried, for example: `WSL interop is disabled (…), so Windows openers
+    (explorer.exe, cmd.exe, powershell.exe) cannot run; xdg-open is not installed; re-enable interop …`.
+    Claude shows the link and calls `await_user_answers`.
 - `link` never opens a browser and always returns the URL straight away.
 - `elicitation` uses the client's native MCP form dialog, when the client advertises form elicitation.
   It suits small, flat interviews: one field per question, plus an "Other" field. It has no notes, no
-  defer and no previews. If the client can't elicit, it falls back to `browser`. This mode is covered by
+  defer and no previews. If the client can't elicit, or the interview has a rank question, it falls back to `browser`. This mode is covered by
   tests with an SDK client only; it has not been tried in Claude Code's own dialog.
 
 ### WSL note (this machine, 2026-09-23)
@@ -172,7 +239,7 @@ also pin one with `ASK_USER_RICH_NODE`.
 ## Running it by hand
 
 ```bash
-npm test                          # 16 tests: a real SDK client driving the server over stdio
+npm test                          # 39 tests: an SDK client driving the server over stdio, plus the opener plan
 npm run dev                       # asks examples/demo-interview.json and prints the result
 node scripts/dev.mjs my.json --link      # print the URL, then wait (use when no browser can be opened)
 node scripts/dev.mjs --no-open           # block without opening; the URL is in the progress lines

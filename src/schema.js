@@ -48,12 +48,21 @@ export const QuestionSchema = z.object({
     .array(OptionSchema)
     .default([])
     .describe("Any number of options. Empty means an open question answered only in free text (allowOther must stay true)."),
+  kind: z
+    .enum(["choice", "rank"])
+    .default("choice")
+    .describe(
+      "choice (default): the user picks one option (or several with multiSelect). " +
+        "rank: the user orders every option by priority, by drag or keyboard; returns `ranked`. A rank question " +
+        "needs at least 2 options, takes no multiSelect and has no Other field.",
+    ),
   recommended: z
     .union([idString, z.array(idString)])
     .optional()
     .describe(
       "Option id you recommend, copied exactly from `options[].id` (not the label). An array of ids requires " +
-        "multiSelect: true. Highlighted in the form.",
+        "multiSelect: true. For kind: \"rank\", an array holding every option id exactly once, in the order you " +
+        "recommend. Highlighted in the form.",
     ),
   rationale: z.string().optional().describe("Markdown: why you recommend it. Shown next to the recommendation."),
   multiSelect: z.boolean().default(false).describe("Allow selecting several options."),
@@ -91,25 +100,95 @@ export const AwaitInputShape = {
   sessionId: z.string().min(1).describe("The sessionId returned by ask_user_rich with delivery=link (or after a failed browser open)."),
 };
 
+export const AppendInputShape = {
+  sessionId: z.string().min(1).describe("The sessionId of the interview that is still open, as returned by ask_user_rich."),
+  questions: z
+    .array(QuestionSchema)
+    .min(1)
+    .describe(
+      "Follow-up questions, appended after the existing ones. Ids must be unique across the whole interview; " +
+        "dependsOn may name any existing question or an earlier question in this list.",
+    ),
+  note: z
+    .string()
+    .optional()
+    .describe("Markdown shown to the user as a banner on the form, e.g. why these follow-ups were added."),
+};
+
+/** Ids that keep `ids` from being a permutation of `optionIds`: each option id exactly once, nothing else. */
+export function permutationProblems(ids, optionIds) {
+  const seen = new Set();
+  const duplicates = [];
+  const extra = [];
+  for (const id of ids) {
+    if (!optionIds.has(id)) extra.push(id);
+    else if (seen.has(id)) duplicates.push(id);
+    seen.add(id);
+  }
+  const missing = [...optionIds].filter((id) => !seen.has(id));
+  return { missing, extra, duplicates, ok: missing.length + extra.length + duplicates.length === 0 };
+}
+
+export function describePermutationProblems({ missing, extra, duplicates }) {
+  return [
+    missing.length ? `missing ${missing.map((id) => `"${id}"`).join(", ")}` : null,
+    extra.length ? `not option ids: ${extra.map((id) => `"${id}"`).join(", ")}` : null,
+    duplicates.length ? `repeated ${duplicates.map((id) => `"${id}"`).join(", ")}` : null,
+  ]
+    .filter(Boolean)
+    .join("; ");
+}
+
 /**
  * Cross-field checks zod cannot express. Returns a list of human-readable problems; empty means valid.
+ * With startIndex, the list is validated as a whole (ids unique across it, dependsOn may point backwards
+ * into it) but only questions from startIndex on are reported, numbered from there: that is how
+ * append_questions checks follow-ups against the questions already on the form.
  */
-export function semanticProblems(input) {
+export function semanticProblems(input, { startIndex = 0 } = {}) {
   const problems = [];
   const questionIds = new Set();
   const allQuestionIds = new Set(input.questions.map((q) => q.id));
   input.questions.forEach((q, index) => {
-    const where = `questions[${index}] (${q.id})`;
+    if (index < startIndex) {
+      questionIds.add(q.id);
+      return;
+    }
+    const where = `questions[${index - startIndex}] (${q.id})`;
+    const rank = q.kind === "rank";
     if (questionIds.has(q.id)) problems.push(`${where}: duplicate question id "${q.id}"`);
     const optionIds = new Set();
     for (const option of q.options) {
       if (optionIds.has(option.id)) problems.push(`${where}: duplicate option id "${option.id}"`);
       optionIds.add(option.id);
     }
-    if (q.options.length === 0 && !q.allowOther) {
+    if (rank) {
+      if (q.options.length < 2) {
+        problems.push(`${where}: a rank question needs at least 2 options to order (it has ${q.options.length})`);
+      }
+      if (q.multiSelect) {
+        problems.push(`${where}: multiSelect does not apply to rank questions; drop it (the user orders every option)`);
+      }
+    } else if (q.options.length === 0 && !q.allowOther) {
       problems.push(`${where}: has no options and allowOther=false, so it cannot be answered`);
     }
-    if (q.recommended !== undefined) {
+    if (q.recommended !== undefined && rank) {
+      const order = `[${q.options.map((o) => `"${o.id}"`).join(", ")}]`;
+      if (!Array.isArray(q.recommended)) {
+        problems.push(
+          `${where}: recommended on a rank question is the recommended order, an array holding every option id ` +
+            `exactly once (e.g. ${order}), not the single id "${q.recommended}"`,
+        );
+      } else {
+        const check = permutationProblems(q.recommended, optionIds);
+        if (!check.ok) {
+          problems.push(
+            `${where}: recommended must list every option id exactly once, in the order you recommend ` +
+              `(${describePermutationProblems(check)}; ids: ${order})`,
+          );
+        }
+      }
+    } else if (q.recommended !== undefined) {
       const recs = Array.isArray(q.recommended) ? q.recommended : [q.recommended];
       if (recs.length > 1 && !q.multiSelect) problems.push(`${where}: several recommended ids but multiSelect is false`);
       for (const rec of recs) {
@@ -131,6 +210,11 @@ export function semanticProblems(input) {
     questionIds.add(q.id);
   });
   return problems;
+}
+
+/** Rank questions have no Other field, whatever the model sent. */
+export function normalizeQuestion(question) {
+  return question.kind === "rank" ? { ...question, allowOther: false } : question;
 }
 
 export function recommendedIds(question) {

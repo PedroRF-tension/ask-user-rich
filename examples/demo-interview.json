@@ -44,6 +44,21 @@
       "rationale": "Physics questions are unusable without formulas and figures; attribution is needed before anything is published."
     },
     {
+      "id": "build-order",
+      "header": "In what order should the day-one features be built?",
+      "body": "Drag the options, or focus one and move it with the keyboard. The top item is built first.",
+      "kind": "rank",
+      "dependsOn": ["features"],
+      "options": [
+        { "id": "latex", "label": "LaTeX formulas" },
+        { "id": "images", "label": "Images in statements and options" },
+        { "id": "source", "label": "Source attribution (vestibular, year)" },
+        { "id": "tags", "label": "Free tags besides the Conteúdo taxonomy" }
+      ],
+      "recommended": ["latex", "images", "source", "tags"],
+      "rationale": "Formulas block every Physics question, figures block most of them, and attribution only matters at publication time."
+    },
+    {
       "id": "naming",
       "header": "What should the Firestore collection be called?",
       "body": "Must follow the canon in `CONTEXT.md`.",
