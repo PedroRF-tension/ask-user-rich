@@ -1,10 +1,36 @@
 {
   "name": "ask-user-rich",
   "version": "0.3.0",
-  "private": true,
   "description": "MCP server: long structured interviews answered in a local browser form",
+  "license": "MIT",
+  "author": "Pedro Felicio",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PedroRF-tension/ask-user-rich.git"
+  },
+  "homepage": "https://github.com/PedroRF-tension/ask-user-rich#readme",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "claude-code",
+    "claude",
+    "ask-user",
+    "interview",
+    "form"
+  ],
   "type": "module",
   "main": "src/server.js",
+  "bin": {
+    "ask-user-rich": "src/server.js"
+  },
+  "files": [
+    "src/",
+    "public/",
+    "run.sh",
+    "examples/",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "start": "./run.sh",
     "dev": "node scripts/dev.mjs",

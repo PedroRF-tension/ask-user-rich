@@ -5,6 +5,22 @@ A stdio MCP server that gives Claude Code a richer way to ask the user than the 
 for long structured interviews, or "grilling rounds". Claude sends the whole interview in one call, the
 server serves it as a local web form, and the call blocks until the user submits.
 
+Requires Node.js 20 or newer. Works with Claude Code and any other MCP client that supports stdio servers.
+
+## Quick start
+
+Register it with Claude Code at user scope, so it is available in every project:
+
+```bash
+claude mcp add-json --scope user ask-user-rich \
+  '{"type":"stdio","command":"npx","args":["-y","github:PedroRF-tension/ask-user-rich"],"timeout":14400000}'
+claude mcp get ask-user-rich        # expect: Status: ✔ Connected
+```
+
+Then ask Claude to "grill me with ask_user_rich about …", or let it choose the tool when a round of
+questions outgrows `AskUserQuestion`. See [Install](#install-reinstall-uninstall) for a local clone instead of npx.
+
+
 ## Tools
 
 ### `ask_user_rich`
@@ -187,12 +203,11 @@ has already submitted, it returns at once.
   defer and no previews. If the client can't elicit, or the interview has a rank question, it falls back to `browser`. This mode is covered by
   tests with an SDK client only; it has not been tried in Claude Code's own dialog.
 
-### WSL note (this machine, 2026-09-23)
+### WSL: when the browser never opens
 
-WSL interop is currently disabled in this distro: `/proc/sys/fs/binfmt_misc` has no `WSLInterop` entry,
-so no `.exe` (explorer.exe, powershell.exe) can run from Linux. The server detects this and falls back to
-returning the link. A known cause is `systemd=true` in `/etc/wsl.conf`, which can drop the binfmt
-registration. A commonly used fix, which was **not applied or verified here**, is:
+If the tool always returns a link on WSL, interop is probably disabled: `/proc/sys/fs/binfmt_misc` has no
+`WSLInterop` entry, so no `.exe` can run from Linux. A known cause is `systemd=true` in `/etc/wsl.conf`,
+which can drop the binfmt registration. A commonly used fix is:
 
 ```bash
 sudo sh -c 'echo ":WSLInterop:M::MZ::/init:PF" > /usr/lib/binfmt.d/WSLInterop.conf'
@@ -200,41 +215,43 @@ sudo systemctl restart systemd-binfmt   # or: wsl.exe --shutdown from Windows, t
 ```
 
 After the fix, check with `ls /proc/sys/fs/binfmt_misc | grep WSLInterop` and
-`explorer.exe https://example.com`.
+`explorer.exe https://example.com`. Until then, the link fallback still works: open the URL by hand.
 
 ## Install, reinstall, uninstall
 
-The server is installed at user scope, so it is available in every project. `claude mcp add` has no
-timeout flag, so it is registered through `add-json` with the documented `timeout` field:
+`claude mcp add` has no timeout flag, so the server is registered through `add-json` with the documented
+`timeout` field (4 hours; see [Waiting, progress and timeouts](#waiting-progress-and-timeouts)).
+
+**Option A: npx straight from GitHub** (no clone needed; npx caches the install):
 
 ```bash
 claude mcp add-json --scope user ask-user-rich \
-  '{"type":"stdio","command":"/home/pedro/.claude/mcp-servers/ask-user-rich/run.sh","args":[],"timeout":14400000}'
-claude mcp get ask-user-rich        # expect: Status: ✔ Connected, Timeout: 14400000ms
+  '{"type":"stdio","command":"npx","args":["-y","github:PedroRF-tension/ask-user-rich"],"timeout":14400000}'
 ```
 
-To reinstall after moving the directory or changing the timeout:
+**Option B: a local clone** (pinned to what you checked out, and easy to hack on):
 
 ```bash
-claude mcp remove --scope user ask-user-rich
-# then run the add-json command above again
-```
-
-To reinstall the dependencies (they live in the local `node_modules/`; nothing is installed globally):
-
-```bash
-cd /home/pedro/.claude/mcp-servers/ask-user-rich && npm ci
-```
-
-To uninstall:
-
-```bash
-claude mcp remove --scope user ask-user-rich
-rm -rf /home/pedro/.claude/mcp-servers/ask-user-rich   # optional
+git clone https://github.com/PedroRF-tension/ask-user-rich.git ~/.claude/mcp-servers/ask-user-rich
+cd ~/.claude/mcp-servers/ask-user-rich && npm ci && npm test
+claude mcp add-json --scope user ask-user-rich \
+  "{\"type\":\"stdio\",\"command\":\"$HOME/.claude/mcp-servers/ask-user-rich/run.sh\",\"args\":[],\"timeout\":14400000}"
 ```
 
 `run.sh` uses `node` from `PATH`. If `PATH` has none, it falls back to the newest `~/.nvm` Node. You can
-also pin one with `ASK_USER_RICH_NODE`.
+also pin one with `ASK_USER_RICH_NODE`. To update a clone: `git pull && npm ci`.
+
+Check it with `claude mcp get ask-user-rich` (expect `Status: ✔ Connected, Timeout: 14400000ms`).
+
+To reinstall after moving the directory or changing the timeout, or to uninstall:
+
+```bash
+claude mcp remove --scope user ask-user-rich
+# then run the add-json command again, or delete the clone to uninstall
+```
+
+Other MCP clients: run `npx -y github:PedroRF-tension/ask-user-rich` (or `run.sh` from a clone) as a
+stdio server, and give tool calls a long timeout, since a call waits for the user.
 
 ## Running it by hand
 
@@ -256,7 +273,7 @@ node scripts/dev.mjs --no-open           # block without opening; the URL is in 
 | `ASK_USER_RICH_HOST` | `127.0.0.1` | Bind address |
 | `ASK_USER_RICH_PUBLIC_HOST` | `localhost` | Hostname used in the URL |
 | `ASK_USER_RICH_PROGRESS_MS` | `15000` | Progress notification interval |
-| `ASK_USER_RICH_LOG_DIR` | `./logs` | Log and answer archive location |
+| `ASK_USER_RICH_LOG_DIR` | `logs/` in the package directory | Log and answer archive location |
 
 Set these with `-e`/`env` on the MCP entry, or in the environment Claude Code starts with. The server
 inherits Claude Code's environment.
@@ -292,3 +309,7 @@ ask-user-rich) instead of AskUserQuestion. Put every question of the round in on
 recommended option with a rationale, and treat `deferred` / `needs-info` answers as open, not as consent.
 If it returns a link instead of answers, show me the link and call `await_user_answers`.
 ```
+
+## License
+
+MIT. See [LICENSE](LICENSE).

@@ -8,8 +8,15 @@ import { archiveResult, log } from "./log.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const publicDir = path.join(root, "public");
-// Package "exports" hide these browser bundles from require.resolve, so they are addressed by path.
-const vendor = (file) => path.join(root, "node_modules", file);
+// Package "exports" hide these browser bundles from require.resolve, so they are addressed by path,
+// walking up the node_modules chain the way Node does (npx hoists them beside this package).
+const vendor = (file) => {
+  for (let dir = root; ; dir = path.dirname(dir)) {
+    const candidate = path.join(dir, "node_modules", file);
+    if (fs.existsSync(candidate)) return candidate;
+    if (path.dirname(dir) === dir) return path.join(root, "node_modules", file);
+  }
+};
 
 const ASSETS = {
   "/assets/app.js": { file: path.join(publicDir, "app.js"), type: "text/javascript; charset=utf-8" },
