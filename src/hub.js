@@ -59,10 +59,11 @@ function readBody(req) {
 }
 
 export class InterviewHub {
-  constructor({ host = "127.0.0.1", port = 0, publicHost = "localhost" } = {}) {
+  constructor({ host = "127.0.0.1", port = 0, portSpan = 10, publicHost = "localhost" } = {}) {
     // A comma-separated host binds every address on the same port, e.g. loopback plus a Tailscale IP.
     this.hosts = String(host).split(",").map((h) => h.trim()).filter(Boolean);
     this.port = port;
+    this.portSpan = Math.max(1, portSpan);
     this.publicHost = publicHost;
     this.servers = [];
     this.sessions = new Map(); // token -> session
@@ -72,7 +73,40 @@ export class InterviewHub {
 
   async start() {
     if (this.listening) return this.listening;
-    const listen = (host) =>
+    // A rejection is not cached: a later call retries, so a session whose ports were all taken recovers once one frees.
+    this.listening = this.bindRange().catch((error) => {
+      this.listening = null;
+      this.servers = [];
+      throw error;
+    });
+    return this.listening;
+  }
+
+  /** Tries port, port+1 .. port+span-1 (a random port when port is 0) until every host binds on one of them. */
+  async bindRange() {
+    const first = this.port;
+    const attempts = first === 0 ? 1 : this.portSpan;
+    let lastError;
+    for (let i = 0; i < attempts; i++) {
+      const port = first === 0 ? 0 : first + i;
+      try {
+        this.port = await this.bindAll(port);
+        log("web server listening", { hosts: this.hosts, port: this.port });
+        return this.port;
+      } catch (error) {
+        lastError = error;
+        if (error.code !== "EADDRINUSE" && error.code !== "EADDRNOTAVAIL") break;
+        log("port unavailable", { port, code: error.code });
+      }
+    }
+    this.port = first;
+    throw lastError;
+  }
+
+  /** Binds every host on one port; on any failure closes what bound, so no partial server stays listening. */
+  async bindAll(port) {
+    const bound = [];
+    const listen = (host, wanted) =>
       new Promise((resolve, reject) => {
         const server = http.createServer((req, res) => {
           this.handle(req, res).catch((error) => {
@@ -81,16 +115,21 @@ export class InterviewHub {
           });
         });
         server.once("error", reject);
-        server.listen(this.port, host, () => {
-          this.port = server.address().port;
-          this.servers.push(server);
-          log("web server listening", { host, port: this.port });
-          resolve(this.port);
+        server.listen(wanted, host, () => {
+          bound.push(server);
+          resolve(server.address().port);
         });
       });
-    // The first bind picks the port (0 means random); the others reuse it so every URL differs only by host.
-    this.listening = this.hosts.reduce((prev, host) => prev.then(() => listen(host)), Promise.resolve()).then(() => this.port);
-    return this.listening;
+    try {
+      // The first bind picks the port (0 means random); the others reuse it so every URL differs only by host.
+      let chosen = port;
+      for (const host of this.hosts) chosen = await listen(host, chosen);
+      this.servers = bound;
+      return chosen;
+    } catch (error) {
+      await Promise.all(bound.map((server) => new Promise((resolve) => server.close(() => resolve()))));
+      throw error;
+    }
   }
 
   async stop() {

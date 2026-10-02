@@ -8,6 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { InterviewHub } from "../src/hub.js";
 import { CallToolResultSchema, ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -709,6 +710,56 @@ describe("native elicitation mode", () => {
       assert.match(conn.stderr(), /elicitation unsupported by client/);
     } finally {
       await conn.client.close();
+    }
+  });
+});
+
+describe("port range", () => {
+  const BASE = 48900;
+
+  test("two hubs with the same configured port get consecutive ports", async () => {
+    const a = new InterviewHub({ port: BASE, portSpan: 3 });
+    const b = new InterviewHub({ port: BASE, portSpan: 3 });
+    try {
+      assert.equal(await a.start(), BASE);
+      assert.equal(await b.start(), BASE + 1);
+    } finally {
+      await a.stop();
+      await b.stop();
+    }
+  });
+
+  test("a hub whose start failed succeeds on a later call once a port is freed", async () => {
+    const blocker = new InterviewHub({ port: BASE + 10, portSpan: 1 });
+    await blocker.start();
+    const hub = new InterviewHub({ port: BASE + 10, portSpan: 1 });
+    try {
+      await assert.rejects(hub.start(), { code: "EADDRINUSE" });
+      await blocker.stop();
+      assert.equal(await hub.start(), BASE + 10);
+    } finally {
+      await blocker.stop();
+      await hub.stop();
+    }
+  });
+
+  test("a partial bind leaves no listening server behind", async () => {
+    // 127.0.0.2 is held on BASE+20 only, so the hub's loopback bind succeeds there and its second host fails.
+    const holder = http.createServer();
+    await new Promise((resolve) => holder.listen(BASE + 20, "127.0.0.2", resolve));
+    const hub = new InterviewHub({ host: "127.0.0.1,127.0.0.2", port: BASE + 20, portSpan: 2 });
+    try {
+      assert.equal(await hub.start(), BASE + 21);
+      assert.equal(hub.servers.length, 2);
+      // the abandoned loopback bind on BASE+20 was closed: it can be bound again
+      await new Promise((resolve, reject) => {
+        const probe = http.createServer();
+        probe.once("error", reject);
+        probe.listen(BASE + 20, "127.0.0.1", () => probe.close(resolve));
+      });
+    } finally {
+      await hub.stop();
+      await new Promise((resolve) => holder.close(resolve));
     }
   });
 });

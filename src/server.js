@@ -14,6 +14,7 @@ const ELICIT_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 const hub = new InterviewHub({
   host: process.env.ASK_USER_RICH_HOST || "127.0.0.1",
   port: Number(process.env.ASK_USER_RICH_PORT || 0),
+  portSpan: Number(process.env.ASK_USER_RICH_PORT_SPAN || 10),
   publicHost: process.env.ASK_USER_RICH_PUBLIC_HOST || "localhost",
 });
 const HAS_PUBLIC = !["localhost", "127.0.0.1", "[::1]"].includes(process.env.ASK_USER_RICH_PUBLIC_HOST || "localhost");

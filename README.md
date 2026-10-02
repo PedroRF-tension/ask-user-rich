@@ -269,7 +269,8 @@ node scripts/dev.mjs --no-open           # block without opening; the URL is in 
 |---|---|---|
 | `ASK_USER_RICH_OPEN` | on | `0` disables opening a browser, so the tool returns the link at once |
 | `ASK_USER_RICH_OPEN_CMD` | platform opener | Command run with the URL as its only argument |
-| `ASK_USER_RICH_PORT` | `0` (random free port) | Fixed port for the form server |
+| `ASK_USER_RICH_PORT` | `0` (random free port) | First port of the form server's range. If it is taken (another Claude session's server), the next free port up to `ASK_USER_RICH_PORT_SPAN` ports is used instead, so each session keeps its own server and its own open forms; the links carry the chosen port |
+| `ASK_USER_RICH_PORT_SPAN` | `10` | How many consecutive ports to try from `ASK_USER_RICH_PORT` (ignored when the port is `0`) |
 | `ASK_USER_RICH_HOST` | `127.0.0.1` | Bind address; comma-separated to bind several on the same port (e.g. `127.0.0.1,100.x.y.z` for loopback plus Tailscale) |
 | `ASK_USER_RICH_PUBLIC_HOST` | `localhost` | Host of the public URL. When it is not loopback, every result carries `urls: { internal, public }` and the instructions tell the model to show both |
 | `ASK_USER_RICH_PROGRESS_MS` | `15000` | Progress notification interval |
