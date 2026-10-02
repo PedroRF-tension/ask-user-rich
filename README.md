@@ -270,8 +270,8 @@ node scripts/dev.mjs --no-open           # block without opening; the URL is in 
 | `ASK_USER_RICH_OPEN` | on | `0` disables opening a browser, so the tool returns the link at once |
 | `ASK_USER_RICH_OPEN_CMD` | platform opener | Command run with the URL as its only argument |
 | `ASK_USER_RICH_PORT` | `0` (random free port) | Fixed port for the form server |
-| `ASK_USER_RICH_HOST` | `127.0.0.1` | Bind address |
-| `ASK_USER_RICH_PUBLIC_HOST` | `localhost` | Hostname used in the URL |
+| `ASK_USER_RICH_HOST` | `127.0.0.1` | Bind address; comma-separated to bind several on the same port (e.g. `127.0.0.1,100.x.y.z` for loopback plus Tailscale) |
+| `ASK_USER_RICH_PUBLIC_HOST` | `localhost` | Host of the public URL. When it is not loopback, every result carries `urls: { internal, public }` and the instructions tell the model to show both |
 | `ASK_USER_RICH_PROGRESS_MS` | `15000` | Progress notification interval |
 | `ASK_USER_RICH_LOG_DIR` | `logs/` in the package directory | Log and answer archive location |
 
@@ -288,7 +288,7 @@ inherits Claude Code's environment.
 
 ## Security
 
-- The server listens on loopback only.
+- The server listens on loopback only, unless `ASK_USER_RICH_HOST` adds another address (keep that to a private network such as a tailnet).
 - Each interview URL carries a random 144-bit token.
 - Requests whose `Host` header is not loopback get a 403, which blocks DNS rebinding.
 - Submits must be `application/json`. That forces a CORS preflight, which the server never answers, so

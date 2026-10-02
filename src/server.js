@@ -16,6 +16,13 @@ const hub = new InterviewHub({
   port: Number(process.env.ASK_USER_RICH_PORT || 0),
   publicHost: process.env.ASK_USER_RICH_PUBLIC_HOST || "localhost",
 });
+const HAS_PUBLIC = !["localhost", "127.0.0.1", "[::1]"].includes(process.env.ASK_USER_RICH_PUBLIC_HOST || "localhost");
+
+/** The links block the model repeats to the user: internal always, public when configured. */
+function linksText(session) {
+  const { internal, public: pub } = hub.urls(session);
+  return pub ? `- Internal (this machine): ${internal}\n- Public (other devices): ${pub}` : `- ${internal}`;
+}
 
 const mcp = new McpServer(
   { name: "ask-user-rich", version: VERSION },
@@ -39,9 +46,24 @@ const mcp = new McpServer(
       "- A rank question (kind: \"rank\") with fewer than 2 options, with multiSelect: true, or with a `recommended` " +
         "that is not an array holding every option id exactly once (the recommended order).",
       "",
+      "Links:",
+      "- Every result that carries a form link carries `urls: { internal, public }`. `internal` is the loopback URL " +
+        "the local browser opens; `public` is the same form on the configured public host (another device, e.g. a " +
+        "phone over Tailscale), or null when none is configured.",
+      "- Whenever you mention a form in chat, show every non-null URL as its own clickable markdown link, labelled, " +
+        "internal first:\n  - **Internal** (this machine): <internal>\n  - **Public** (other devices): <public>\n" +
+        "  Never show only one of them when both exist.",
+      ...(HAS_PUBLIC
+        ? [
+            "- A public host is configured, so the user may answer from another device. The browser-opening call " +
+              "blocks before you can print anything, so prefer delivery: \"link\": show both links, then call " +
+              "await_user_answers.",
+          ]
+        : []),
+      "",
       "After the call:",
-      "- If it returns status \"awaiting\" with a URL (the browser could not be opened, e.g. WSL without interop, or " +
-        "delivery=link), show the user the URL as a clickable link, then call await_user_answers with the sessionId. " +
+      "- If it returns status \"awaiting\" (delivery=link, or the browser could not be opened, e.g. WSL without " +
+        "interop), show the user the links as above, then call await_user_answers with the sessionId. " +
         "Do not ask the questions again in chat.",
       "- To ask follow-ups while the form is still open (ask_user_rich returned \"awaiting\", or an ask_user_rich / " +
         "await_user_answers call is still waiting in the background), call append_questions with the sessionId " +
@@ -71,14 +93,14 @@ function answersResult(result) {
 }
 
 function pendingResult(session, url, reason) {
-  const structured = { status: "awaiting", sessionId: session.id, url, reason };
+  const structured = { status: "awaiting", sessionId: session.id, url, urls: hub.urls(session), reason };
   return {
     content: [
       {
         type: "text",
         text:
-          `${reason}\nThe interview "${session.spec.title}" is waiting at:\n${url}\n\n` +
-          `Show this link to the user, then call await_user_answers with sessionId "${session.id}" to wait for the submit.`,
+          `${reason}\nThe interview "${session.spec.title}" is waiting at:\n${linksText(session)}\n\n` +
+          `Show these links to the user (every one, labelled), then call await_user_answers with sessionId "${session.id}" to wait for the submit.`,
       },
     ],
     structuredContent: structured,
@@ -99,6 +121,7 @@ async function waitWithProgress(session, extra, url) {
   log("waiting", { id: session.id, url, progressToken: progressToken === undefined ? "none" : "present" });
   // The spec requires progress to increase on every notification, so it counts ticks; the message carries the time.
   let ticks = 0;
+  const pub = hub.urls(session).public;
   const tick = async () => {
     if (progressToken === undefined) return;
     const elapsed = Date.now() - session.createdAt;
@@ -108,7 +131,7 @@ async function waitWithProgress(session, extra, url) {
       params: {
         progressToken,
         progress: ticks,
-        message: `Waiting for answers to "${session.spec.title}" at ${url} (${formatElapsed(elapsed)} elapsed)`,
+        message: `Waiting for answers to "${session.spec.title}" at ${url}${pub ? ` (public: ${pub})` : ""} (${formatElapsed(elapsed)} elapsed)`,
       },
     });
     log("progress sent", { id: session.id, tick: ticks });
@@ -122,7 +145,7 @@ async function waitWithProgress(session, extra, url) {
     // The form stays open: whatever the user submits later is archived and await_user_answers can still fetch it.
     log("wait ended without answers", { id: session.id, reason: error.message, state: session.state });
     return errorResult(
-      `Stopped waiting for "${session.spec.title}" (${error.message}). The form stays open at ${url}; ` +
+      `Stopped waiting for "${session.spec.title}" (${error.message}). The form stays open at:\n${linksText(session)}\n` +
         `call await_user_answers with sessionId "${session.id}" to collect the answers later.`,
     );
   }
@@ -307,12 +330,12 @@ mcp.registerTool(
           type: "text",
           text:
             `Appended ${questions.length} question(s) to "${session.spec.title}" (now ${total}, version ${version}). ` +
-            `The open form at ${url} updates live.\n` +
+            `The open form updates live at:\n${linksText(session)}\n` +
             `Keep waiting for the submit: an ask_user_rich or await_user_answers call that is already waiting returns ` +
             `once the user submits; otherwise call await_user_answers with sessionId "${session.id}".`,
         },
       ],
-      structuredContent: { status: "appended", sessionId: session.id, appended: questions.length, total, version, url },
+      structuredContent: { status: "appended", sessionId: session.id, appended: questions.length, total, version, url, urls: hub.urls(session) },
     };
   },
 );

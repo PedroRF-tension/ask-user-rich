@@ -494,7 +494,7 @@ describe("ask-user-rich over stdio", () => {
       },
     });
     assert.notEqual(appended.isError, true, appended.content[0].text);
-    assert.deepEqual(appended.structuredContent, { status: "appended", sessionId, appended: 2, total: 6, version: 2, url });
+    assert.deepEqual(appended.structuredContent, { status: "appended", sessionId, appended: 2, total: 6, version: 2, url, urls: { internal: url, public: null } });
     assert.match(appended.content[0].text, /updates live/);
     assert.match(appended.content[0].text, /await_user_answers/);
     assert.match(conn.stderr(), /questions appended .*appended=2 total=6 version=2/);
@@ -612,6 +612,42 @@ describe("browser opening", () => {
       assert.equal(result.structuredContent.status, "awaiting");
       assert.match(result.content[0].text, /Could not open the browser/);
       assert.match(result.content[0].text, /http:\/\/localhost:\d+\/s\//);
+    } finally {
+      await conn.client.close();
+    }
+  });
+});
+
+describe("public host", () => {
+  test("binds every listed host on one port and returns both URLs, each serving the form", async () => {
+    // 127.0.0.2 stands in for a tailnet address: it is loopback on Linux but not in the loopback Host allowlist.
+    const conn = await connect({ env: { ASK_USER_RICH_HOST: "127.0.0.1,127.0.0.2", ASK_USER_RICH_PUBLIC_HOST: "127.0.0.2" } });
+    try {
+      const { instructions } = conn.client.getInstructions ? { instructions: conn.client.getInstructions() } : { instructions: "" };
+      assert.match(instructions, /\*\*Public\*\* \(other devices\)/);
+      assert.match(instructions, /prefer delivery: "link"/);
+      const result = await conn.client.callTool({ name: "ask_user_rich", arguments: { ...sampleInterview, delivery: "link" } });
+      const { url, urls } = result.structuredContent;
+      assert.equal(urls.internal, url);
+      assert.match(urls.internal, /^http:\/\/localhost:(\d+)\/s\//);
+      const port = urls.internal.match(/:(\d+)\//)[1];
+      assert.equal(urls.public, urls.internal.replace(`localhost:${port}`, `127.0.0.2:${port}`));
+      assert.match(result.content[0].text, /Internal \(this machine\): http:\/\/localhost/);
+      assert.match(result.content[0].text, /Public \(other devices\): http:\/\/127\.0\.0\.2/);
+      assert.equal((await fetch(urls.internal)).status, 200);
+      assert.equal((await fetch(urls.public)).status, 200);
+    } finally {
+      await conn.client.close();
+    }
+  });
+
+  test("without a public host, urls.public is null and the instructions do not push delivery=link", async () => {
+    const conn = await connect();
+    try {
+      assert.doesNotMatch(conn.client.getInstructions() ?? "", /prefer delivery: "link"/);
+      const result = await conn.client.callTool({ name: "ask_user_rich", arguments: { ...sampleInterview, delivery: "link" } });
+      assert.equal(result.structuredContent.urls.public, null);
+      assert.doesNotMatch(result.content[0].text, /Public/);
     } finally {
       await conn.client.close();
     }

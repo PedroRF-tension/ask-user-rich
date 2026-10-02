@@ -60,40 +60,49 @@ function readBody(req) {
 
 export class InterviewHub {
   constructor({ host = "127.0.0.1", port = 0, publicHost = "localhost" } = {}) {
-    this.host = host;
+    // A comma-separated host binds every address on the same port, e.g. loopback plus a Tailscale IP.
+    this.hosts = String(host).split(",").map((h) => h.trim()).filter(Boolean);
     this.port = port;
     this.publicHost = publicHost;
+    this.servers = [];
     this.sessions = new Map(); // token -> session
     this.byId = new Map(); // id -> session
-    this.server = null;
     this.listening = null;
   }
 
   async start() {
     if (this.listening) return this.listening;
-    this.server = http.createServer((req, res) => {
-      this.handle(req, res).catch((error) => {
-        log("http handler error", { error: String(error) });
-        if (!res.headersSent) send(res, 500, { error: "internal error" });
+    const listen = (host) =>
+      new Promise((resolve, reject) => {
+        const server = http.createServer((req, res) => {
+          this.handle(req, res).catch((error) => {
+            log("http handler error", { error: String(error) });
+            if (!res.headersSent) send(res, 500, { error: "internal error" });
+          });
+        });
+        server.once("error", reject);
+        server.listen(this.port, host, () => {
+          this.port = server.address().port;
+          this.servers.push(server);
+          log("web server listening", { host, port: this.port });
+          resolve(this.port);
+        });
       });
-    });
-    this.listening = new Promise((resolve, reject) => {
-      this.server.once("error", reject);
-      this.server.listen(this.port, this.host, () => {
-        this.port = this.server.address().port;
-        log("web server listening", { host: this.host, port: this.port });
-        resolve(this.port);
-      });
-    });
+    // The first bind picks the port (0 means random); the others reuse it so every URL differs only by host.
+    this.listening = this.hosts.reduce((prev, host) => prev.then(() => listen(host)), Promise.resolve()).then(() => this.port);
     return this.listening;
   }
 
   async stop() {
-    if (!this.server) return;
+    if (this.servers.length === 0) return;
     for (const session of this.byId.values()) this.cancel(session, "server shutting down");
-    this.server.closeAllConnections?.();
-    await new Promise((resolve) => this.server.close(() => resolve()));
-    this.server = null;
+    await Promise.all(
+      this.servers.map((server) => {
+        server.closeAllConnections?.();
+        return new Promise((resolve) => server.close(() => resolve()));
+      }),
+    );
+    this.servers = [];
     this.listening = null;
   }
 
@@ -123,8 +132,19 @@ export class InterviewHub {
     return this.byId.get(id);
   }
 
+  /** The loopback URL: what the local browser opens. */
   url(session) {
-    return `http://${this.publicHost}:${this.port}/s/${session.token}`;
+    return `http://localhost:${this.port}/s/${session.token}`;
+  }
+
+  /** Both addresses of a session; `public` is null when no non-loopback public host is configured. */
+  urls(session) {
+    const path = `/s/${session.token}`;
+    const hasPublic = !ALLOWED_HOSTS.has(this.publicHost);
+    return {
+      internal: `http://localhost:${this.port}${path}`,
+      public: hasPublic ? `http://${this.publicHost}:${this.port}${path}` : null,
+    };
   }
 
   settle(session, state, result = null) {
