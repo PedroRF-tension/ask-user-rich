@@ -16,7 +16,6 @@ import * as T from './lib/texts'
 const segment = atom({ plugin: 'ask-user-rich', key: 'segment' } as const, null as BandSegment | null)
 const thread = atom({ plugin: 'ask-user-rich', key: 'thread' } as const, null as AskUserRichThread | null)
 const rows = atom({ plugin: 'ask-user-rich', key: 'rows' } as const, {} as Record<string, AskUserRichRow>)
-const busy = atom({ plugin: 'ask-user-rich', key: 'busy' } as const, false)
 const turnId = atom({ plugin: 'ask-user-rich', key: 'turnId' } as const, null as string | null)
 const grilling = atom({ plugin: 'ask-user-rich', key: 'grilling' } as const, { since: null } as { since: string | null })
 const askFailedTurnId = atom({ plugin: 'ask-user-rich', key: 'askFailedTurnId' } as const, null as string | null)
@@ -109,7 +108,7 @@ async function launch($: EngineInterface, options: PluginOptions): Promise<strin
 
 /**
  * The daemon this mod needs: started when absent, restarted when its version or its addresses
- * differ from this mod's and no Round is open anywhere. Returns null, or why it is unavailable.
+ * differ from this mod's. Returns null, or why it is unavailable.
  */
 async function ensureDaemon($: EngineInterface, options: PluginOptions): Promise<string | null> {
   const running = await hello($)
@@ -117,12 +116,14 @@ async function ensureDaemon($: EngineInterface, options: PluginOptions): Promise
   const want = await daemonEnv($, options)
   const version = await ownVersion($)
   const hosts = (running.hosts as string[] | undefined)?.join(',')
+  const wantHosts = (want.ASK_USER_RICH_HOSTS ?? '').split(',').map((h) => h.trim()).filter(Boolean).join(',')
   const differs =
     (version !== null && running.version !== version) ||
-    hosts !== want.ASK_USER_RICH_HOSTS ||
+    hosts !== wantHosts ||
     String(running.publicHost) !== want.ASK_USER_RICH_PUBLIC_HOST ||
     String(running.port) !== want.ASK_USER_RICH_PORT
-  if (!differs || Number(running.openRounds ?? 0) > 0) return null
+  // Threads live on disk and pages reconnect, so a restart loses nothing even with Rounds open.
+  if (!differs) return null
   debug($, `restarting the daemon (version ${String(running.version)} → ${version}, or its addresses changed)`)
   try {
     await call($, 'POST', '/mod/shutdown', { reason: 'upgrade or config change' })
@@ -194,16 +195,10 @@ async function poll($: EngineInterface, options: PluginOptions): Promise<void> {
     if (JSON.stringify(current) !== JSON.stringify(next)) await setThread($, options, next)
     const deliveries = (reply.body.deliveries ?? []) as Delivery[]
     if (deliveries.length === 0) return
-    const planned = plan(deliveries, await read($, busy))
-    for (const text of planned.rows) {
-      debug($, `folded into the running turn: ${text.split('\n')[0]}`)
-      try {
-        await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
-      } catch (err) {
-        debug($, `folding failed: ${reason(err)}`)
-      }
-    }
-    if (planned.prompt !== null) await $.prompt.submit({ text: planned.prompt })
+    // A plugin's prompt runs once the session is idle, so nothing lands in a turn that is already ending.
+    const planned = plan(deliveries)
+    debug($, `delivering: ${planned.prompt.split('\n')[0]}`)
+    await $.prompt.submit({ text: planned.prompt })
     await call($, 'POST', '/mod/ack', { session: await session($), ids: planned.ids })
   } catch (err) {
     debug($, `poll failed: ${reason(err)}`)
@@ -224,7 +219,7 @@ function armPoll($: EngineInterface, options: PluginOptions): void {
 async function phone($: EngineInterface, text: string): Promise<void> {
   let autopilot = false
   try {
-    autopilot = (await $.state.get({ plugin: 'house-rules', key: 'autopilot' } as never)).value === true
+    autopilot = ((await $.state.get({ plugin: 'house-rules', key: 'autopilot' } as never)).value as unknown) === true
   } catch {
     autopilot = false
   }
@@ -315,12 +310,11 @@ export const register: Register = (on, options) => {
       await $.tool.register({ name: 'ask_user_rich', description: T.ASK_DESCRIPTION, inputSchema: ASK_SCHEMA })
       await $.tool.register({ name: 'append_questions', description: T.APPEND_DESCRIPTION, inputSchema: APPEND_SCHEMA })
       await $.tool.register({ name: 'close_thread', description: T.CLOSE_DESCRIPTION, inputSchema: T.CLOSE_SCHEMA })
-      const unavailable = await ensureDaemon($, options)
-      if (unavailable !== null) debug($, `daemon unavailable at start: ${unavailable}`)
-      // A resumed conversation may have a Thread, and answers waiting; a fresh one polls nothing until it asks.
+      // Nothing is launched here: the first ask does that. A daemon already running may hold this
+      // conversation's Thread (a resume) and answers waiting for it; it stays up while any are pending.
       failures = 0
       nextPollAt = 0
-      if (unavailable === null) {
+      if ((await hello($)) !== null) {
         await poll($, options)
         if ((await read($, thread)) !== null) armPoll($, options)
       }
@@ -339,7 +333,6 @@ export const register: Register = (on, options) => {
       await update($, segment, () => null)
       await update($, grilling, () => ({ since: null }))
       await update($, askFailedTurnId, () => null)
-      await update($, busy, () => false)
     }
     return next(e)
   })
@@ -390,7 +383,8 @@ export const register: Register = (on, options) => {
       const text = chipOf(e.tool, e)
       if ((await read($, chip)) !== text) {
         await update($, chip, () => text)
-        await presence($, 'working', text)
+        // Not awaited: the tool the model asked for never waits on the page's status line.
+        void presence($, 'working', text)
       }
     }
     return next(e)
@@ -399,7 +393,6 @@ export const register: Register = (on, options) => {
   on('turn.start', async ($, e, next) => {
     if (await isEnabled($, options)) {
       await update($, turnId, () => e.turnId)
-      await update($, busy, () => true)
       await update($, chip, () => null)
       await presence($, 'working', null)
     }
@@ -409,7 +402,6 @@ export const register: Register = (on, options) => {
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
     if (e.agentId === undefined && (await isEnabled($, options))) {
-      await update($, busy, () => false)
       await update($, chip, () => null)
       await presence($, 'idle', null)
     }

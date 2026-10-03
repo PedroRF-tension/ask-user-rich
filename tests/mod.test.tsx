@@ -1,7 +1,7 @@
 // S2: the mod through the engine, the daemon stood in for by tests/kit.ts.
 import { describe, expect, test } from 'claude-code/testing'
 
-import { CWD, HOME, QUESTIONS, SOCKET, URLS, ask, folded, houseRules, notices, posts, reader, start, state, thread, world } from './kit'
+import { CWD, HOME, QUESTIONS, SOCKET, URLS, ask, houseRules, notices, posts, reader, start, state, thread, world } from './kit'
 import { APPEND_SCHEMA, ASK_SCHEMA } from '../hooks/lib/schemas.gen'
 import * as T from '../hooks/lib/texts'
 
@@ -37,40 +37,51 @@ describe('the kill switch', () => {
 })
 
 describe('the daemon', () => {
-  test('absent at start: launched with the configured addresses', { options: { hosts: '127.0.0.1,100.1.2.3', publicHost: '100.1.2.3', port: 47811 } }, async ($, on) => {
+  test('a session that never asks launches nothing', async ($, on) => {
     const w = world(on)
     await start($)
+    expect(w.launches).toEqual([])
+  })
+
+  test('absent at the first ask: launched with the configured addresses', { options: { hosts: '127.0.0.1, 100.1.2.3', publicHost: '100.1.2.3', port: 47811 } }, async ($, on) => {
+    const w = world(on)
+    await start($)
+    await ask($)
     expect(w.launches).toHaveLength(1)
     expect(w.launches[0]?.argv[0]).toBe('bash')
     expect(w.launches[0]?.argv[1]).toMatch(/\/daemon\/launch\.sh$/)
     expect(w.launches[0]?.env).toEqual({
       ASK_USER_RICH_HOME: `${HOME}/.cache/ask-user-rich`,
-      ASK_USER_RICH_HOSTS: '127.0.0.1,100.1.2.3',
+      ASK_USER_RICH_HOSTS: '127.0.0.1, 100.1.2.3',
       ASK_USER_RICH_PUBLIC_HOST: '100.1.2.3',
       ASK_USER_RICH_PORT: '47811',
     })
     expect(w.requests[0]?.socketPath).toBe(SOCKET)
   })
 
-  test('running at the same version and addresses: left alone', async ($, on) => {
-    const w = world(on, { daemon: { running: true } })
+  test('running at the same version and addresses (spaces in the hosts aside): left alone', { options: { hosts: '127.0.0.1 , 100.1.2.3' } }, async ($, on) => {
+    const w = world(on, { daemon: { running: true, hosts: '127.0.0.1,100.1.2.3' } })
     await start($)
+    await ask($)
     expect(w.launches).toEqual([])
     expect(posts(w, '/mod/shutdown')).toEqual([])
   })
 
-  test('an older version with no Round open: shut down and launched again', async ($, on) => {
+  test('an older version: shut down and launched again at the next ask', async ($, on) => {
     const w = world(on, { daemon: { running: true, version: '0.8.0' } })
     await start($)
+    expect(posts(w, '/mod/shutdown')).toEqual([])
+    await ask($)
     expect(posts(w, '/mod/shutdown')).toHaveLength(1)
     expect(w.launches).toHaveLength(1)
   })
 
-  test('another port with a Round open somewhere: left running', { options: { port: 47900 } }, async ($, on) => {
+  test('another port: restarted even with Rounds open, since Threads live on disk', { options: { port: 47900 } }, async ($, on) => {
     const w = world(on, { daemon: { running: true, openRounds: 1 } })
     await start($)
-    expect(posts(w, '/mod/shutdown')).toEqual([])
-    expect(w.launches).toEqual([])
+    await ask($)
+    expect(posts(w, '/mod/shutdown')).toHaveLength(1)
+    expect(w.launches).toHaveLength(1)
   })
 })
 
@@ -164,7 +175,7 @@ describe('ask_user_rich', () => {
 describe('the answers come back by themselves', () => {
   const answers = { id: 'd1', kind: 'answers', round: 1, summary: '"Storage" submitted: 1 answered\n1. [db] Which database? -> Postgres (recommended)', result: { counts: { answered: 1 } } }
 
-  test('idle: the next poll submits them as a prompt, then acknowledges', async ($, on) => {
+  test('the next poll submits them as a prompt, then acknowledges', async ($, on) => {
     const w = world(on, { daemon: { running: true } })
     await start($)
     await ask($)
@@ -178,15 +189,16 @@ describe('the answers come back by themselves', () => {
     expect(w.prompts).toHaveLength(1)
   })
 
-  test('busy: each is folded into the running turn as a user row', async ($, on) => {
+  test('mid-turn: still one prompt, which the engine runs once the turn ends', async ($, on) => {
     const w = world(on, { daemon: { running: true } })
     await start($)
     await ask($)
     await $.turn.start({ turnId: 't1', text: 'work' } as never)
     w.daemon.pending = [answers, { id: 'd2', kind: 'message', text: 'Q1: actually SQLite' }]
     await w.clock.advance(1000)
-    expect(w.prompts).toEqual([])
-    expect(folded(w)).toEqual(['Answers to Round 1 (submitted on the Thread page)', 'Message from the user on the Thread page:'])
+    expect(w.prompts).toHaveLength(1)
+    expect(w.prompts[0]).toMatch(/^Answers to Round 1/)
+    expect(w.prompts[0]).toContain('---\n\nMessage from the user on the Thread page:\n\nQ1: actually SQLite')
     expect(posts(w, '/mod/ack').at(-1)?.body).toEqual({ session: 'S1', ids: ['d1', 'd2'] })
   })
 
@@ -202,8 +214,8 @@ describe('the answers come back by themselves', () => {
   test('a resumed conversation gets what waited for it, with no ask of its own', async ($, on) => {
     const w = world(on, { daemon: { running: true, thread: thread({ openRound: null }), pending: [{ id: 'd4', kind: 'message', text: 'sent while you were gone' }] } })
     await start($)
-    await w.clock.advance(1000)
     expect(w.prompts).toEqual(['Message from the user on the Thread page:\n\nsent while you were gone'])
+    expect(w.launches).toEqual([])
   })
 })
 

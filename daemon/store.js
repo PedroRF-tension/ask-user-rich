@@ -89,6 +89,13 @@ export class Store {
     return this.openRound(thread) ? "waiting" : "idle";
   }
 
+  /** Answers, messages and Ends no conversation has collected yet. */
+  pendingCount() {
+    let count = 0;
+    for (const thread of this.threads.values()) count += thread.deliveries.filter((d) => d.deliveredAt === null).length;
+    return count;
+  }
+
   openRoundCount() {
     let count = 0;
     for (const thread of this.threads.values()) if (this.openRound(thread)) count += 1;
@@ -281,9 +288,10 @@ export class Store {
     const thread = this.bySession(session);
     if (!thread) return null;
     if (state !== "working" && state !== "idle") throw new InputError(`presence must be working or idle, not ${state}`);
+    // Presence changes with every tool call: kept in memory and announced, never written to disk.
     thread.presence = { state, chip: state === "working" ? chip : null, at: this.now() };
     thread.lastSeen = this.now();
-    this.save(thread);
+    this.onChange(thread);
     return thread;
   }
 

@@ -177,5 +177,3 @@ export const posts = (w: World, route: string) => w.requests.filter((r) => r.rou
 
 /** What the mod appended, read from its log: the test engine has no session.append beneath plugins. */
 export const notices = (w: World) => w.logs.filter((l) => l.startsWith('ask-user-rich: notice: ')).map((l) => l.slice('ask-user-rich: notice: '.length))
-export const folded = (w: World) =>
-  w.logs.filter((l) => l.startsWith('ask-user-rich: folded into the running turn: ')).map((l) => l.slice('ask-user-rich: folded into the running turn: '.length))

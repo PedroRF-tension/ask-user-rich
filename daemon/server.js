@@ -192,9 +192,12 @@ export class Daemon {
     return count;
   }
 
-  /** True when no Round is open and no page is connected, and that has held for `idleMs`. */
+  /**
+   * True when no Round is open, nothing waits to be delivered and no page is connected, and that has
+   * held for `idleMs`. A pending delivery keeps it up so a resumed conversation still collects it.
+   */
   isIdle(idleMs) {
-    if (this.store.openRoundCount() > 0 || this.pageConnections() > 0) {
+    if (this.store.openRoundCount() > 0 || this.store.pendingCount() > 0 || this.pageConnections() > 0) {
       this.lastBusyAt = this.now();
       return false;
     }
@@ -208,7 +211,7 @@ export class Daemon {
     if (!set || set.size === 0) return;
     const presence = this.store.presenceOf(thread);
     this.sentPresence.set(thread.id, presence);
-    const data = JSON.stringify({ rev: thread.rev, presence });
+    const data = JSON.stringify({ rev: thread.rev, presence, chip: thread.presence.chip });
     for (const res of set) res.write(`event: changed\ndata: ${data}\n\n`);
   }
 
@@ -352,7 +355,7 @@ export class Daemon {
     set.add(res);
     this.lastBusyAt = this.now();
     const presence = this.store.presenceOf(thread);
-    res.write(`retry: 2000\nevent: changed\ndata: ${JSON.stringify({ rev: thread.rev, presence })}\n\n`);
+    res.write(`retry: 2000\nevent: changed\ndata: ${JSON.stringify({ rev: thread.rev, presence, chip: thread.presence.chip })}\n\n`);
     req.on("close", () => {
       set.delete(res);
       this.lastBusyAt = this.now();

@@ -34,7 +34,6 @@ declare module 'claude-code' {
       segment: BandSegment | null
       thread: AskUserRichThread | null
       rows: Record<string, AskUserRichRow>
-      busy: boolean
       turnId: string | null
       grilling: { since: string | null }
       askFailedTurnId: string | null

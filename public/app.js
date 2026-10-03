@@ -184,13 +184,24 @@
     return { mode: s.mode, selected: [...s.selected], otherOn: s.otherOn, other: s.other, notes: s.notes, order: s.order, ranked: s.ranked };
   }
 
-  function saveDraft() {
-    if (!sessionId || finished) return;
+  // The local copy names what has not reached the daemon yet, so a reload never trades it for an older one.
+  function writeLocal(draft) {
+    const unsynced = Object.keys(draft.answers).filter((id) => posted[id] !== JSON.stringify(draft.answers[id]));
+    try {
+      localStorage.setItem(draftKey(), JSON.stringify({ ...draft, unsynced, notesUnsynced: draft.generalNotes !== (postedNotes ?? "") }));
+    } catch {}
+  }
+
+  function currentDraft() {
     const draft = { step: current, generalNotes: generalNotes?.value ?? "", answers: {} };
     for (const [id, s] of Object.entries(state)) draft.answers[id] = draftOf(s);
-    try {
-      localStorage.setItem(draftKey(), JSON.stringify(draft));
-    } catch {}
+    return draft;
+  }
+
+  function saveDraft() {
+    if (!sessionId || finished) return;
+    const draft = currentDraft();
+    writeLocal(draft);
     queueRemoteDraft(draft);
   }
 
@@ -226,6 +237,7 @@
       for (const [id, a] of Object.entries(answers)) posted[id] = JSON.stringify(a);
       postedNotes = draft.generalNotes;
       if (typeof body.draftRev === "number") draftRev = body.draftRev;
+      writeLocal(currentDraft());
     } catch {}
   }
 
@@ -257,11 +269,7 @@
     }
     if (changed) {
       refreshSummary();
-      try {
-        const local = { step: current, generalNotes: generalNotes?.value ?? "", answers: {} };
-        for (const [id, s] of Object.entries(state)) local.answers[id] = draftOf(s);
-        localStorage.setItem(draftKey(), JSON.stringify(local));
-      } catch {}
+      writeLocal(currentDraft());
     }
   }
 
@@ -1456,19 +1464,27 @@
       $("#done-back").href = threadUrl;
       $("#eyebrow").textContent = `Round ${roundNo} · ${data.thread?.title ?? "Thread"}`;
       if (data.state === "submitted") return showDone("Already submitted", "These answers were already sent to Claude.");
-      // A draft another device saved wins over this browser's older copy.
+      // The daemon's draft wins, except for what this browser changed and never managed to send.
+      let resend = false;
       if (data.draft && typeof data.draftRev === "number") {
         draftRev = data.draftRev;
         const local = loadDraft();
-        if (!local || data.draftBy !== clientId) {
-          try {
-            localStorage.setItem(draftKey(), JSON.stringify({ ...(local ?? {}), ...data.draft, answers: { ...(local?.answers ?? {}), ...data.draft.answers } }));
-          } catch {}
+        const keep = new Set(local?.unsynced ?? []);
+        const answers = { ...(local?.answers ?? {}) };
+        for (const [id, a] of Object.entries(data.draft.answers ?? {})) {
+          posted[id] = JSON.stringify(a);
+          if (keep.has(id)) resend = true;
+          else answers[id] = a;
         }
-        for (const [id, a] of Object.entries(data.draft.answers ?? {})) posted[id] = JSON.stringify(a);
         postedNotes = data.draft.generalNotes ?? null;
+        const notes = local?.notesUnsynced ? local.generalNotes : (data.draft.generalNotes ?? local?.generalNotes ?? "");
+        resend ||= Boolean(local?.notesUnsynced);
+        try {
+          localStorage.setItem(draftKey(), JSON.stringify({ ...(local ?? {}), step: local?.step ?? data.draft.step, generalNotes: notes, answers }));
+        } catch {}
       }
       render();
+      if (resend) saveDraft();
       setInterval(poll, 2500);
       poll();
     } catch (error) {

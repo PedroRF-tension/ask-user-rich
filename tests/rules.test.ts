@@ -52,10 +52,8 @@ describe('delivery', () => {
   const answers = { id: 'a', kind: 'answers' as const, round: 2, summary: 'S\n1. [x] X? -> y', result: { ok: 1 } }
   const message = { id: 'm', kind: 'message' as const, text: 'hi' }
 
-  test('idle: one prompt with everything in order; busy: one row each', () => {
-    expect(plan([answers, message], false)).toEqual({ prompt: `${deliveryText(answers)}\n\n---\n\n${deliveryText(message)}`, rows: [], ids: ['a', 'm'] })
-    expect(plan([answers, message], true)).toEqual({ prompt: null, rows: [deliveryText(answers), deliveryText(message)], ids: ['a', 'm'] })
-    expect(plan([], false)).toEqual({ prompt: null, rows: [], ids: [] })
+  test('one prompt with everything, in order', () => {
+    expect(plan([answers, message])).toEqual({ prompt: `${deliveryText(answers)}\n\n---\n\n${deliveryText(message)}`, ids: ['a', 'm'] })
   })
 })
 

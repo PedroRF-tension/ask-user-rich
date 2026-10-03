@@ -438,6 +438,17 @@ describe("daemon: persistence, idle exit and pruning", () => {
     await assert.rejects(mod(d.socket, "GET", "/mod/hello"));
   });
 
+  test("an answer no conversation collected yet keeps it alive past the idle window", async () => {
+    const d = startDaemon({ ASK_USER_RICH_IDLE_MS: "1200" });
+    const ask = await post(d.socket, "/mod/ask", { session: "s6", input: interview() });
+    const tokenValue = ask.body.urls.internal.split("/").pop();
+    const base = `http://127.0.0.1:${(await mod(d.socket, "GET", "/mod/hello")).body.port}`;
+    await page(base, `/api/c/${tokenValue}/r/1/submit`, { method: "POST", body: { answers: { db: { status: "defer" } } } });
+    await sleep(2600);
+    assert.equal((await mod(d.socket, "GET", "/mod/hello")).status, 200);
+    await stopDaemon(d);
+  });
+
   test("an open Round keeps it alive past the idle window", async () => {
     const d = startDaemon({ ASK_USER_RICH_IDLE_MS: "1200" });
     await post(d.socket, "/mod/ask", { session: "s4", input: interview() });

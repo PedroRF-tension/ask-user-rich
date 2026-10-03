@@ -17,14 +17,7 @@ export function deliveryText(d: Delivery): string {
   return `${END_HEAD}: the discussion is over. Do not open another Round unless the user asks for one; close_thread is not needed.`
 }
 
-/**
- * Idle: one prompt carrying everything, in order. Busy: one appended user row each, read at the
- * model's next step. Either way, everything is acknowledged once stored.
- */
-export function plan(deliveries: readonly Delivery[], busy: boolean): { prompt: string | null; rows: string[]; ids: string[] } {
-  const texts = deliveries.map(deliveryText)
-  const ids = deliveries.map((d) => d.id)
-  if (texts.length === 0) return { prompt: null, rows: [], ids }
-  if (busy) return { prompt: null, rows: texts, ids }
-  return { prompt: texts.join('\n\n---\n\n'), rows: [], ids }
+/** One prompt carrying everything, in order; everything is acknowledged once it is queued. */
+export function plan(deliveries: readonly Delivery[]): { prompt: string; ids: string[] } {
+  return { prompt: deliveries.map(deliveryText).join('\n\n---\n\n'), ids: deliveries.map((d) => d.id) }
 }

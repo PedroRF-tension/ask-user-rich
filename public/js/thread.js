@@ -139,6 +139,6 @@ document.addEventListener("keydown", (event) => {
 });
 
 follow(token, (change) => {
-  if (!change || !view || change.rev !== view.rev || change.presence !== view.presence.state) refresh();
+  if (!change || !view || change.rev !== view.rev || change.presence !== view.presence.state || (change.chip ?? null) !== (view.presence.chip ?? null)) refresh();
 });
 refresh();
