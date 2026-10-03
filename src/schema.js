@@ -221,3 +221,16 @@ export function recommendedIds(question) {
   if (question.recommended === undefined) return [];
   return Array.isArray(question.recommended) ? question.recommended : [question.recommended];
 }
+
+/** A Round as the mod's ask_user_rich sends it: today's interview, with no delivery mode. */
+export const RoundInputSchema = z.object({
+  title: AskInputShape.title,
+  intro: AskInputShape.intro,
+  questions: AskInputShape.questions,
+});
+
+/** Follow-ups to the open Round of a conversation's Thread. */
+export const AppendRoundSchema = z.object({
+  questions: AppendInputShape.questions,
+  note: AppendInputShape.note,
+});

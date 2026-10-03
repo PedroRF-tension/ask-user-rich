@@ -1,6 +1,6 @@
 {
   "name": "ask-user-rich",
-  "version": "0.3.0",
+  "version": "0.9.0",
   "description": "MCP server: long structured interviews answered in a local browser form",
   "license": "MIT",
   "author": "Pedro Felicio",
