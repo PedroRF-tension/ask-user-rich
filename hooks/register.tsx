@@ -4,7 +4,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, PluginOptions, Register, Timer } from 'claude-code'
 
 import type { AskUserRichRow, AskUserRichThread, AskUserRichUrls, BandSegment } from '../types'
-import { compactLine, plan } from './lib/delivery'
+import { plan } from './lib/delivery'
 import type { Delivery } from './lib/delivery'
 import { denyAsk, isGrillingSkill, isGrillPrompt, isUserOrigin } from './lib/grilling'
 import { chipOf, mirroredOf } from './lib/mirror'
@@ -28,6 +28,9 @@ const LAUNCH_TIMEOUT_MS = 15_000
 // A hot reload drops the module's timers with it; session.start arms a fresh one.
 let pollTimer: Timer | null = null
 let polling = false
+// A daemon that stopped answering is asked again less and less often, up to every 30 s.
+let failures = 0
+let nextPollAt = 0
 
 type Reply = { status: number; body: Record<string, unknown> }
 
@@ -170,9 +173,21 @@ async function presence($: EngineInterface, state: 'working' | 'idle', toolChip:
 /** One poll: the Thread's state, and whatever the user sent from the page, stored then acknowledged. */
 async function poll($: EngineInterface, options: PluginOptions): Promise<void> {
   if (polling) return
+  const now = await $.clock.now()
+  if (now < nextPollAt) return
   polling = true
   try {
-    const reply = await call($, 'POST', '/mod/pending', { session: await session($) })
+    let reply: Reply
+    try {
+      reply = await call($, 'POST', '/mod/pending', { session: await session($) })
+      failures = 0
+      nextPollAt = 0
+    } catch (err) {
+      failures += 1
+      nextPollAt = now + Math.min(30_000, POLL_MS * 2 ** failures)
+      if (failures === 1) debug($, `the daemon stopped answering: ${reason(err)}`)
+      return
+    }
     if (reply.status !== 200) return
     const next = (reply.body.thread ?? null) as AskUserRichThread | null
     const current = await read($, thread)
@@ -198,6 +213,8 @@ async function poll($: EngineInterface, options: PluginOptions): Promise<void> {
 }
 
 function armPoll($: EngineInterface, options: PluginOptions): void {
+  failures = 0
+  nextPollAt = 0
   pollTimer?.cancel()
   pollTimer = $.clock.every(POLL_MS, () => {
     void poll($, options)
@@ -300,8 +317,13 @@ export const register: Register = (on, options) => {
       await $.tool.register({ name: 'close_thread', description: T.CLOSE_DESCRIPTION, inputSchema: T.CLOSE_SCHEMA })
       const unavailable = await ensureDaemon($, options)
       if (unavailable !== null) debug($, `daemon unavailable at start: ${unavailable}`)
-      // A resumed conversation may have answers waiting; a fresh one has no Thread and polls nothing.
-      armPoll($, options)
+      // A resumed conversation may have a Thread, and answers waiting; a fresh one polls nothing until it asks.
+      failures = 0
+      nextPollAt = 0
+      if (unavailable === null) {
+        await poll($, options)
+        if ((await read($, thread)) !== null) armPoll($, options)
+      }
     } catch (err) {
       debug($, `session.start failed: ${reason(err)}`)
     }
@@ -439,15 +461,5 @@ export const register: Register = (on, options) => {
         <Markdown text={lines.join('\n')} />
       </Box>
     )
-  })
-
-  // A delivery the plugin submitted draws as one compact line; ctrl+o shows it whole.
-  on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
-    const props = e.props as { text: string; origin: { kind: string; name?: string }; isExpanded: boolean }
-    if (props.isExpanded || props.origin.kind !== 'plugin' || props.origin.name !== T.PLUGIN) return next(e)
-    const line = compactLine(props.text)
-    if (line === null) return next(e)
-    const { Text } = $.ui.resolve(e)
-    return <Text dimColor>{`◆ ${line} (ctrl+o to expand)`}</Text>
   })
 }

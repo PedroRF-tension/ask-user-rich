@@ -39,3 +39,13 @@ heartbeat the daemon uses to tell a running session from a gone one.
 The declaration file has `agent.offer` (agent types) and `tool.describe` (a description and its
 deferral) but nothing that offers a tool per loop. The tools are listed everywhere; the mod denies a
 call that carries an `agentId`.
+
+## Found in the smoke run (interactive, 2.1.289)
+
+- **A plugin cannot redraw its own prompt.** The debug log shows `ui.render skipped: re-entry (the plugin's
+  own code raised it)` for the `UserMessage` row of a prompt the mod submitted. The delivered answers
+  therefore draw in full, under the engine's own "Prompt from the ask-user-rich plugin" line; no compact row.
+- **A system notice is stored but not drawn in the fullscreen transcript.** `$.session.append` of a
+  `system` row lands in the transcript file as `subtype: informational`, and the fullscreen view shows no
+  line for it. The tool row (and the band, in projects that have it) is what reliably shows the links.
+- **`pluginConfigs` key** for a `--plugin-dir` load is the plain name (`ask-user-rich`), not `@inline`.

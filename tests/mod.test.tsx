@@ -304,20 +304,4 @@ describe('drawing', () => {
       await ui.unmount()
     }
   })
-
-  test('a delivered prompt draws as one compact line unless expanded', async ($, on) => {
-    world(on, { daemon: { running: true } })
-    await start($)
-    const text = 'The ask-user-rich plugin sent a message:\nAnswers to Round 2 (submitted on the Thread page)\n\n"S" submitted\n1. [a] A? -> x\n2. [b] B? -> y'
-    for (const surface of SURFACES) {
-      const ui = await $.ui.mount({
-        plugin: 'ask-user-rich',
-        surface,
-        component: 'UserMessage',
-        props: { text, origin: { kind: 'plugin', name: 'ask-user-rich' }, isExpanded: false } as never,
-      })
-      expect((await ui.find({ type: 'Text' }))?.text).toBe('◆ Answers to Round 2 (submitted on the Thread page) · 2 answer(s) (ctrl+o to expand)')
-      await ui.unmount()
-    }
-  })
 })

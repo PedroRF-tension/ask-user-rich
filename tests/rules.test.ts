@@ -1,7 +1,7 @@
 // The mod's pure rules, read directly: what is mirrored, how deliveries are planned and drawn.
 import { describe, expect, test } from 'claude-code/testing'
 
-import { compactLine, deliveryText, plan } from '../hooks/lib/delivery'
+import { deliveryText, plan } from '../hooks/lib/delivery'
 import { denyAsk, isGrillingSkill, isGrillPrompt } from '../hooks/lib/grilling'
 import { chipOf, mirroredOf } from '../hooks/lib/mirror'
 import { segmentOf } from '../hooks/lib/segment'
@@ -56,12 +56,6 @@ describe('delivery', () => {
     expect(plan([answers, message], false)).toEqual({ prompt: `${deliveryText(answers)}\n\n---\n\n${deliveryText(message)}`, rows: [], ids: ['a', 'm'] })
     expect(plan([answers, message], true)).toEqual({ prompt: null, rows: [deliveryText(answers), deliveryText(message)], ids: ['a', 'm'] })
     expect(plan([], false)).toEqual({ prompt: null, rows: [], ids: [] })
-  })
-
-  test('the compact line is the first line, with the answers counted', () => {
-    expect(compactLine(`The ask-user-rich plugin sent a message:\n${deliveryText(answers)}`)).toBe('Answers to Round 2 (submitted on the Thread page) · 1 answer(s)')
-    expect(compactLine(deliveryText(message))).toBe('Message from the user on the Thread page')
-    expect(compactLine('an ordinary prompt')).toBeNull()
   })
 })
 
