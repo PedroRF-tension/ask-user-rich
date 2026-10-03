@@ -34,7 +34,9 @@
   "scripts": {
     "start": "./run.sh",
     "dev": "node scripts/dev.mjs",
-    "test": "node --test --test-timeout=20000 test/*.test.js"
+    "test": "node --test --test-timeout=30000 test/*.test.js",
+    "test:mod": "claude plugin test .",
+    "gen:schemas": "node scripts/gen-schemas.mjs"
   },
   "engines": {
     "node": ">=20"

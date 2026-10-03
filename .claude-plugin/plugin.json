@@ -1,0 +1,33 @@
+{
+  "name": "ask-user-rich",
+  "version": "0.9.0",
+  "description": "One stable Thread page per conversation for the model's questions: Rounds answered in a rich form, answers that come back by themselves, links drawn in the transcript.",
+  "author": { "name": "Pedro Felicio" },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "enabled": {
+      "type": "boolean",
+      "title": "Enabled",
+      "description": "Serve ask_user_rich through the Thread page (tools, links, guard, mirroring)",
+      "default": true
+    },
+    "hosts": {
+      "type": "string",
+      "title": "Hosts",
+      "description": "Addresses the page binds, comma-separated (loopback plus a tailnet address, for example)",
+      "default": "127.0.0.1"
+    },
+    "publicHost": {
+      "type": "string",
+      "title": "Public host",
+      "description": "Host of the Public link (another device); a loopback name shows no Public link",
+      "default": "localhost"
+    },
+    "port": {
+      "type": "number",
+      "title": "Port",
+      "description": "The one port every Thread page is served on",
+      "default": 47800
+    }
+  }
+}
