@@ -38,7 +38,7 @@ If an older version is registered as an MCP server under the same name, remove i
 
 ## Configuration
 
-Rows in `/config` (the mod's `userConfig`), or `pluginConfigs["ask-user-rich"].options` in settings:
+Rows in `/config` (the mod's `userConfig`), or in `~/.claude/settings.json` under `pluginConfigs["ask-user-rich@skills-dir"].options` (`pluginConfigs["ask-user-rich"]` for a `--plugin-dir` load):
 
 | Option | Default | Effect |
 |---|---|---|
