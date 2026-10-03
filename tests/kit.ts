@@ -10,7 +10,7 @@ export const HOME = '/home/t'
 export const CWD = '/work/demo'
 export const SOCKET = `${HOME}/.cache/ask-user-rich/daemon.sock`
 export const NOW = Date.UTC(2026, 9, 3, 12)
-export const URLS = { internal: 'http://localhost:47800/c/TOKEN', public: 'http://100.1.2.3:47800/c/TOKEN' }
+export const URLS = { internal: 'http://localhost:47810/c/TOKEN', public: 'http://100.1.2.3:47810/c/TOKEN' }
 
 export type Request = { method: string; route: string; body: Record<string, unknown> | null; socketPath: string | undefined }
 
@@ -44,11 +44,11 @@ export const thread = (over: Record<string, unknown> = {}) => ({ id: 'th1', toke
 export function world(on: On, options: { env?: Record<string, string>; daemon?: Partial<Daemon> } = {}): World {
   const daemon: Daemon = {
     running: false,
-    version: '0.9.0',
+    version: '1.0.0',
     openRounds: 0,
     hosts: '127.0.0.1',
     publicHost: 'localhost',
-    port: 47800,
+    port: 47810,
     thread: null,
     pending: [],
     ask: (body) => ({
@@ -78,11 +78,11 @@ export function world(on: On, options: { env?: Record<string, string>; daemon?: 
   on('session.cwd', () => ({ value: CWD }))
   on('ui.log', (_$, e) => (w.logs.push(e.text), { value: undefined }))
   on('tool.register', (_$, e) => (w.tools.push({ name: e.name, description: e.description, inputSchema: e.inputSchema }), { value: { tool: `mcp__ask-user-rich__${e.name}` } }))
-  on('fs.read', (_$, e) => (e.path.endsWith('/package.json') ? { value: JSON.stringify({ version: '0.9.0' }) } : { deny: `ENOENT: ${e.path}` }))
+  on('fs.read', (_$, e) => (e.path.endsWith('/package.json') ? { value: JSON.stringify({ version: '1.0.0' }) } : { deny: `ENOENT: ${e.path}` }))
   on('process.run', (_$, e) => {
     w.launches.push({ argv: [...e.argv], env: e.init?.env ? { ...e.init.env } : undefined })
     if (!w.launchFails) daemon.running = true
-    const stdout = w.launchFails ? '{"ok":false,"error":"the daemon exited with code 3"}\n' : '{"ok":true,"already":false,"pid":1,"version":"0.9.0"}\n'
+    const stdout = w.launchFails ? '{"ok":false,"error":"the daemon exited with code 3"}\n' : '{"ok":true,"already":false,"pid":1,"version":"1.0.0"}\n'
     return { value: { exitCode: w.launchFails ? 1 : 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('http.fetch', (_$, e) => {

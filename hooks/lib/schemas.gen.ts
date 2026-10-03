@@ -5,7 +5,7 @@ export const ASK_SCHEMA: Record<string, unknown> = {
     "title": {
       "type": "string",
       "minLength": 1,
-      "description": "Interview title, shown as the page heading."
+      "description": "Round title, shown on its card and as the stepper's heading."
     },
     "intro": {
       "description": "Markdown introduction: the context the user needs before answering.",
@@ -253,10 +253,10 @@ export const APPEND_SCHEMA: Record<string, unknown> = {
           "header"
         ]
       },
-      "description": "Follow-up questions, appended after the existing ones. Ids must be unique across the whole interview; dependsOn may name any existing question or an earlier question in this list."
+      "description": "Follow-up questions, appended after the existing ones. Ids must be unique across the whole Round; dependsOn may name any existing question or an earlier question in this list."
     },
     "note": {
-      "description": "Markdown shown to the user as a banner on the form, e.g. why these follow-ups were added.",
+      "description": "Markdown shown to the user as a banner on the open Round, e.g. why these follow-ups were added.",
       "type": "string"
     }
   },

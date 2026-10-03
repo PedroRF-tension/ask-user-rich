@@ -1,6 +1,6 @@
 {
   "name": "ask-user-rich",
-  "version": "0.9.0",
+  "version": "1.0.0",
   "description": "One stable Thread page per conversation for the model's questions: Rounds answered in a rich form, answers that come back by themselves, links drawn in the transcript.",
   "author": { "name": "Pedro Felicio" },
   "types": "./types/index.d.ts",
@@ -27,7 +27,7 @@
       "type": "number",
       "title": "Port",
       "description": "The one port every Thread page is served on",
-      "default": 47800
+      "default": 47810
     }
   }
 }

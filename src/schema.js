@@ -76,44 +76,33 @@ export const QuestionSchema = z.object({
     ),
 });
 
-export const AskInputShape = {
-  title: z.string().min(1).describe("Interview title, shown as the page heading."),
-  intro: z.string().optional().describe("Markdown introduction: the context the user needs before answering."),
+const title = z.string().min(1).describe("Round title, shown on its card and as the stepper's heading.");
+const intro = z.string().optional().describe("Markdown introduction: the context the user needs before answering.");
+
+/** A Round as the mod's ask_user_rich sends it. */
+export const RoundInputSchema = z.object({
+  title,
+  intro,
   questions: z
     .array(QuestionSchema)
     .min(1)
     .describe("All questions, shown one per screen in this order (a stepper ending in a review screen). No upper bound."),
-  delivery: z
-    .enum(["browser", "link", "elicitation"])
-    .default("browser")
-    .describe(
-      "browser (default): open the form in the user's browser and wait for the submit. " +
-        "link: do not open anything; return the URL immediately so you can show it, then call await_user_answers. " +
-        "elicitation: small flat interviews only, asked through the client's native form dialog; " +
-        "no notes, defer or previews. Falls back to browser when the client cannot elicit.",
-    ),
-};
+});
 
-export const AskInputSchema = z.object(AskInputShape);
-
-export const AwaitInputShape = {
-  sessionId: z.string().min(1).describe("The sessionId returned by ask_user_rich with delivery=link (or after a failed browser open)."),
-};
-
-export const AppendInputShape = {
-  sessionId: z.string().min(1).describe("The sessionId of the interview that is still open, as returned by ask_user_rich."),
+/** Follow-ups to the open Round of a conversation's Thread. */
+export const AppendRoundSchema = z.object({
   questions: z
     .array(QuestionSchema)
     .min(1)
     .describe(
-      "Follow-up questions, appended after the existing ones. Ids must be unique across the whole interview; " +
+      "Follow-up questions, appended after the existing ones. Ids must be unique across the whole Round; " +
         "dependsOn may name any existing question or an earlier question in this list.",
     ),
   note: z
     .string()
     .optional()
-    .describe("Markdown shown to the user as a banner on the form, e.g. why these follow-ups were added."),
-};
+    .describe("Markdown shown to the user as a banner on the open Round, e.g. why these follow-ups were added."),
+});
 
 /** Ids that keep `ids` from being a permutation of `optionIds`: each option id exactly once, nothing else. */
 export function permutationProblems(ids, optionIds) {
@@ -222,15 +211,3 @@ export function recommendedIds(question) {
   return Array.isArray(question.recommended) ? question.recommended : [question.recommended];
 }
 
-/** A Round as the mod's ask_user_rich sends it: today's interview, with no delivery mode. */
-export const RoundInputSchema = z.object({
-  title: AskInputShape.title,
-  intro: AskInputShape.intro,
-  questions: AskInputShape.questions,
-});
-
-/** Follow-ups to the open Round of a conversation's Thread. */
-export const AppendRoundSchema = z.object({
-  questions: AppendInputShape.questions,
-  note: AppendInputShape.note,
-});

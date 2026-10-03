@@ -20,7 +20,7 @@ export function config(env = process.env) {
       .split(",")
       .map((h) => h.trim())
       .filter(Boolean),
-    port: Number(env.ASK_USER_RICH_PORT ?? 47800),
+    port: Number(env.ASK_USER_RICH_PORT ?? 47810),
     publicHost: env.ASK_USER_RICH_PUBLIC_HOST || "localhost",
     idleMs: Number(env.ASK_USER_RICH_IDLE_MS || 24 * 60 * 60 * 1000),
     keepDays: Number(env.ASK_USER_RICH_KEEP_DAYS || 7),

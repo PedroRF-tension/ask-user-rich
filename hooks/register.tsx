@@ -57,7 +57,7 @@ async function daemonEnv($: EngineInterface, options: PluginOptions): Promise<Re
     ASK_USER_RICH_HOME: await home($),
     ASK_USER_RICH_HOSTS: String(options.hosts ?? '127.0.0.1'),
     ASK_USER_RICH_PUBLIC_HOST: String(options.publicHost ?? 'localhost'),
-    ASK_USER_RICH_PORT: String(options.port ?? 47800),
+    ASK_USER_RICH_PORT: String(options.port ?? 47810),
   }
 }
 
