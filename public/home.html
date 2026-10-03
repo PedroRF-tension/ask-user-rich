@@ -1,1 +1,36 @@
-<!doctype html><title>Threads</title>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Threads</title>
+    <script>
+      try {
+        const t = localStorage.getItem("aur:theme");
+        if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+      } catch {}
+    </script>
+    <link rel="stylesheet" href="/assets/style.css" />
+  </head>
+  <body class="thread-page">
+    <header class="top">
+      <div class="wrap top-row">
+        <div class="top-title">
+          <span class="eyebrow">ask-user-rich</span>
+          <h1>Threads</h1>
+        </div>
+        <div class="top-tools">
+          <button type="button" id="theme" class="ghost" title="Switch theme">Theme: auto</button>
+        </div>
+      </div>
+      <div class="wrap"><p class="muted t-sub">Every conversation that asked you something in the last 7 days.</p></div>
+    </header>
+    <main class="wrap">
+      <ul id="threads" class="t-index"></ul>
+    </main>
+    <script src="/assets/marked.js"></script>
+    <script src="/assets/purify.js"></script>
+    <script type="module" src="/assets/js/home.js"></script>
+  </body>
+</html>

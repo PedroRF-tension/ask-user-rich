@@ -1,1 +1,51 @@
-<!doctype html><title>Thread</title>
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Thread</title>
+    <script>
+      try {
+        const t = localStorage.getItem("aur:theme");
+        if (t === "light" || t === "dark") document.documentElement.dataset.theme = t;
+      } catch {}
+    </script>
+    <link rel="stylesheet" href="/assets/style.css" />
+  </head>
+  <body class="thread-page">
+    <header class="top">
+      <div class="wrap top-row">
+        <div class="top-title">
+          <span class="eyebrow" id="eyebrow">Thread</span>
+          <h1 id="title">Loading…</h1>
+        </div>
+        <div class="top-tools">
+          <a class="ghost back-link" href="/" title="Every live Thread">All Threads</a>
+          <button type="button" id="end" class="ghost" title="Close the Thread: Claude is told the discussion is over">End</button>
+          <button type="button" id="theme" class="ghost" title="Switch theme">Theme: auto</button>
+        </div>
+      </div>
+      <div class="wrap">
+        <div id="presence" class="t-presence" role="status" aria-live="polite"></div>
+      </div>
+    </header>
+
+    <main class="wrap" id="main">
+      <div id="banner" class="banner" role="status" hidden></div>
+      <ol id="stream" class="t-stream" aria-label="Conversation"></ol>
+    </main>
+
+    <footer class="bottom t-composer-bar">
+      <form class="wrap t-compose" id="composer">
+        <label class="sr-only" for="message">Message Claude</label>
+        <textarea id="message" rows="1" placeholder="Message Claude…  (Enter sends, Shift+Enter for a new line)"></textarea>
+        <button type="submit" class="primary" id="send">Send</button>
+      </form>
+    </footer>
+
+    <script src="/assets/marked.js"></script>
+    <script src="/assets/purify.js"></script>
+    <script type="module" src="/assets/js/thread.js"></script>
+  </body>
+</html>

@@ -2,8 +2,22 @@
 (() => {
   "use strict";
 
-  const token = location.pathname.split("/").pop();
-  const api = `/api/s/${token}`;
+  // Focus mode: /c/<thread token>/r/<round>, today's stepper over one Round of a Thread.
+  const [, , token, , roundNo] = location.pathname.split("/");
+  const api = `/api/c/${token}/r/${roundNo}`;
+  const threadUrl = `/c/${token}`;
+  // One id per tab, so a remote draft is told from this tab's own echo.
+  const clientId = (() => {
+    try {
+      const known = sessionStorage.getItem("aur:client");
+      if (known) return known;
+      const fresh = Math.random().toString(36).slice(2, 10);
+      sessionStorage.setItem("aur:client", fresh);
+      return fresh;
+    } catch {
+      return Math.random().toString(36).slice(2, 10);
+    }
+  })();
   const $ = (sel, root = document) => root.querySelector(sel);
   const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)");
 
@@ -166,15 +180,89 @@
     return parts.join(" + ");
   }
 
+  function draftOf(s) {
+    return { mode: s.mode, selected: [...s.selected], otherOn: s.otherOn, other: s.other, notes: s.notes, order: s.order, ranked: s.ranked };
+  }
+
   function saveDraft() {
     if (!sessionId || finished) return;
     const draft = { step: current, generalNotes: generalNotes?.value ?? "", answers: {} };
-    for (const [id, s] of Object.entries(state)) {
-      draft.answers[id] = { mode: s.mode, selected: [...s.selected], otherOn: s.otherOn, other: s.other, notes: s.notes, order: s.order, ranked: s.ranked };
-    }
+    for (const [id, s] of Object.entries(state)) draft.answers[id] = draftOf(s);
     try {
       localStorage.setItem(draftKey(), JSON.stringify(draft));
     } catch {}
+    queueRemoteDraft(draft);
+  }
+
+  /* Drafts follow the user between devices: only what changed is sent, last write wins per question. */
+  const posted = {}; // question id -> JSON of what this tab last sent or received
+  let postedNotes = null;
+  let remoteTimer = null;
+  let pendingRemote = null;
+  let draftRev = 0;
+  function queueRemoteDraft(draft) {
+    pendingRemote = draft;
+    clearTimeout(remoteTimer);
+    remoteTimer = setTimeout(sendRemoteDraft, 600);
+  }
+  async function sendRemoteDraft() {
+    const draft = pendingRemote;
+    if (!draft || finished) return;
+    const answers = {};
+    for (const [id, a] of Object.entries(draft.answers)) {
+      const json = JSON.stringify(a);
+      if (posted[id] !== json) answers[id] = a;
+    }
+    const notesChanged = draft.generalNotes !== postedNotes;
+    if (Object.keys(answers).length === 0 && !notesChanged) return;
+    try {
+      const response = await fetch(`${api}/draft`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ client: clientId, draft: { generalNotes: draft.generalNotes, answers } }),
+      });
+      if (!response.ok) return;
+      const body = await response.json();
+      for (const [id, a] of Object.entries(answers)) posted[id] = JSON.stringify(a);
+      postedNotes = draft.generalNotes;
+      if (typeof body.draftRev === "number") draftRev = body.draftRev;
+    } catch {}
+  }
+
+  // Another device's edits: applied to every question but the field being typed in here.
+  function applyRemoteDraft(draft) {
+    if (!draft || !spec) return;
+    const active = document.activeElement;
+    const typing = active && (active.tagName === "TEXTAREA" || active.tagName === "INPUT");
+    let changed = false;
+    for (const q of spec.questions) {
+      const a = draft.answers?.[q.id];
+      if (!a || !state[q.id]) continue;
+      const json = JSON.stringify(a);
+      if (JSON.stringify(draftOf(state[q.id])) === json) {
+        posted[q.id] = json;
+        continue;
+      }
+      const step = steps.find((x) => x.q === q);
+      if (typing && step?.el?.contains(active)) continue;
+      initState(q, a);
+      views[q.id].sync();
+      posted[q.id] = json;
+      changed = true;
+    }
+    if (typeof draft.generalNotes === "string" && generalNotes && !(typing && active === generalNotes) && generalNotes.value !== draft.generalNotes) {
+      generalNotes.value = draft.generalNotes;
+      postedNotes = draft.generalNotes;
+      changed = true;
+    }
+    if (changed) {
+      refreshSummary();
+      try {
+        const local = { step: current, generalNotes: generalNotes?.value ?? "", answers: {} };
+        for (const [id, s] of Object.entries(state)) local.answers[id] = draftOf(s);
+        localStorage.setItem(draftKey(), JSON.stringify(local));
+      } catch {}
+    }
   }
 
   function loadDraft() {
@@ -1312,10 +1400,11 @@
       } catch {}
       showDone(
         "Answers sent",
-        body.delivered
-          ? "Claude has your answers. You can close this tab."
-          : `Saved. Claude was not waiting on this form, so ask it to collect them with await_user_answers (session ${sessionId}).`,
+        body.attached
+          ? "They reach Claude by themselves. Back to the Thread…"
+          : "Saved. This session isn't running right now: the answers reach it when the conversation resumes.",
       );
+      if (body.attached) setTimeout(() => location.assign(threadUrl), 1200);
     } catch (error) {
       nextButton.disabled = false;
       resetSubmitConfirm();
@@ -1329,25 +1418,29 @@
     banner.hidden = !text;
   }
 
-  /* Liveness: tell the user when Claude stopped waiting or the server went away. */
-  let notWaiting = 0;
+  /* Liveness: follow-ups, other devices' drafts, a submit from elsewhere, and the session's state. */
   async function poll() {
     if (finished) return;
     try {
       const response = await fetch(`${api}/state`, { cache: "no-store" });
-      if (response.status === 404) return showBanner("This interview has expired on the server. Your draft is kept in this browser.");
-      const { state: s, waiting, version } = await response.json();
+      if (response.status === 404) return showBanner("This Round is no longer on the server. Your draft is kept in this browser.");
+      const { state: s, version, draftRev: rev, draftBy, presence } = await response.json();
       if (typeof version === "number" && version > specVersion) await integrateUpdate();
       if (s === "submitted") return showDone("Already submitted", "These answers were already sent to Claude.");
-      if (s === "cancelled") return showBanner("Claude cancelled this interview. Your draft is kept in this browser.");
-      notWaiting = waiting ? 0 : notWaiting + 1;
+      if (typeof rev === "number" && rev !== draftRev) {
+        draftRev = rev;
+        if (draftBy !== clientId) {
+          const full = await (await fetch(api, { cache: "no-store" })).json();
+          applyRemoteDraft(full.draft);
+        }
+      }
       showBanner(
-        notWaiting >= 2
-          ? `Claude is not waiting on this form right now. You can still submit: the answers are saved and Claude can collect them with await_user_answers (session ${sessionId}).`
+        presence === "not-running"
+          ? "This session isn't running right now. You can still submit: the answers reach it when the conversation resumes."
           : "",
       );
     } catch {
-      showBanner("Lost contact with the ask-user-rich server (was the Claude Code session closed?). Your draft is kept in this browser.");
+      showBanner("Lost contact with the ask-user-rich daemon. Your draft is kept in this browser.");
     }
   }
 
@@ -1359,12 +1452,27 @@
       spec = data.spec;
       sessionId = data.id;
       specVersion = typeof data.version === "number" ? data.version : 1;
+      $("#back").href = threadUrl;
+      $("#done-back").href = threadUrl;
+      $("#eyebrow").textContent = `Round ${roundNo} · ${data.thread?.title ?? "Thread"}`;
       if (data.state === "submitted") return showDone("Already submitted", "These answers were already sent to Claude.");
+      // A draft another device saved wins over this browser's older copy.
+      if (data.draft && typeof data.draftRev === "number") {
+        draftRev = data.draftRev;
+        const local = loadDraft();
+        if (!local || data.draftBy !== clientId) {
+          try {
+            localStorage.setItem(draftKey(), JSON.stringify({ ...(local ?? {}), ...data.draft, answers: { ...(local?.answers ?? {}), ...data.draft.answers } }));
+          } catch {}
+        }
+        for (const [id, a] of Object.entries(data.draft.answers ?? {})) posted[id] = JSON.stringify(a);
+        postedNotes = data.draft.generalNotes ?? null;
+      }
       render();
       setInterval(poll, 2500);
       poll();
     } catch (error) {
-      $("#title").textContent = "Interview unavailable";
+      $("#title").textContent = "Round unavailable";
       showBanner(error.message);
       $("#bottom").hidden = true;
     }

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="referrer" content="no-referrer" />
-    <title>Interview</title>
+    <title>Round</title>
     <script>
       // Applied before first paint so a forced theme never flashes the other one.
       try {
@@ -18,10 +18,11 @@
     <header class="top">
       <div class="wrap top-row">
         <div class="top-title">
-          <span class="eyebrow">Claude is asking</span>
+          <span class="eyebrow" id="eyebrow">Claude is asking</span>
           <h1 id="title">Loading…</h1>
         </div>
         <div class="top-tools">
+          <a id="back" class="ghost back-link" href="#" title="Back to the Thread">← Thread</a>
           <span id="progress" class="progress" aria-live="polite"></span>
           <button type="button" id="view" class="ghost view-toggle" title="Switch between one question per screen and all questions (V)" aria-pressed="false">Show all</button>
           <button type="button" id="help-open" class="ghost icon" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
@@ -53,7 +54,8 @@
 
     <section id="done" class="done wrap" hidden>
       <h2 id="done-title">Answers sent</h2>
-      <p id="done-text" class="muted">Claude has your answers. You can close this tab.</p>
+      <p id="done-text" class="muted">Claude has your answers.</p>
+      <p><a id="done-back" class="ghost back-link" href="#">← Back to the Thread</a></p>
     </section>
 
     <dialog id="help" class="help" aria-labelledby="help-title">
